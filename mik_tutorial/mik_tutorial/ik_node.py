@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation as R
 from std_msgs.msg import Header
 
 # IK solvers
-from .ik_solvers import KinematicModel, JacobianIKSolver, FabrikPureIKSolver
+from .ik_solvers import KinematicModel, JacobianIKSolver, FabrikRIKSolver
 
 class IKTestNode(Node):
     def __init__(self):
@@ -23,7 +23,7 @@ class IKTestNode(Node):
         # Kinematics + solver
         kinematics = KinematicModel()
         if solver_name.lower() == 'fabrik':
-            self.ik_solver = FabrikPureIKSolver(kinematics)
+            self.ik_solver = FabrikRIKSolver(kinematics)
         else:
             self.ik_solver = JacobianIKSolver(kinematics)
 
@@ -34,7 +34,7 @@ class IKTestNode(Node):
         self.im_server = InteractiveMarkerServer(self, "ik_controls")
 
         # Keep last successful q as seed
-        self.q_seed = None
+        self.q_seed = np.deg2rad(np.array([55.0, 0.0, 205.0, 0.0, 85.0, 0.0], dtype=float))
 
         # Publish throttle
         self._last_pub_time = self.get_clock().now()
