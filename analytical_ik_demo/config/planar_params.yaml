@@ -1,0 +1,14 @@
+planar_ik_node:
+  ros__parameters:
+    L1: 0.3
+    L2: 0.25
+    rate_hz: 50.0
+    toggle_elbow_every_sec: 1.5
+
+planar_target_publisher:
+  ros__parameters:
+    radius: 0.35
+    center_x: 0.2
+    center_y: 0.0
+    rate_hz: 30.0
+    omega_rps: 0.5
