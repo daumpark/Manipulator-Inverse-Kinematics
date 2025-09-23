@@ -15,13 +15,11 @@ def generate_launch_description():
         robot_desc = infp.read()
 
     return LaunchDescription([
-        # ---- CLI args ----
-        DeclareLaunchArgument('solver', default_value='jacobian',
-                              description="IK solver: 'jacobian' or 'fabrik'"),
+        DeclareLaunchArgument('solver', default_value='jacobian'),
         DeclareLaunchArgument('publish_joint_rate_hz', default_value='30'),
         DeclareLaunchArgument('joint_roles_override', default_value=''),
 
-        # Jacobian params
+        # Jacobian
         DeclareLaunchArgument('jacobian_max_iter', default_value='150'),
         DeclareLaunchArgument('jacobian_tol_pos', default_value='0.001'),
         DeclareLaunchArgument('jacobian_tol_rot_deg', default_value='1.0'),
@@ -30,14 +28,21 @@ def generate_launch_description():
         DeclareLaunchArgument('jacobian_w_pos', default_value='1.0'),
         DeclareLaunchArgument('jacobian_w_rot', default_value='0.7'),
 
-        # FABRIK params
+        # FABRIK
         DeclareLaunchArgument('fabrik_max_iter', default_value='120'),
         DeclareLaunchArgument('fabrik_tol_pos', default_value='0.001'),
         DeclareLaunchArgument('fabrik_tol_rot_deg', default_value='1.0'),
         DeclareLaunchArgument('fabrik_q_gain', default_value='0.9'),
         DeclareLaunchArgument('fabrik_q_reg', default_value='0.02'),
+        DeclareLaunchArgument('fabrik_smooth_q', default_value='0.30'),
+        DeclareLaunchArgument('fabrik_relax_pos', default_value='0.30'),
+        DeclareLaunchArgument('fabrik_max_step_deg', default_value='6.0'),
+        DeclareLaunchArgument('fabrik_orient_gate_mul', default_value='5.0'),
 
-        # ---- nodes ----
+        # Debug viz
+        DeclareLaunchArgument('debug_viz', default_value='true'),
+        DeclareLaunchArgument('debug_max_points', default_value='80'),
+
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -68,6 +73,13 @@ def generate_launch_description():
                 {'fabrik_tol_rot_deg': LaunchConfiguration('fabrik_tol_rot_deg')},
                 {'fabrik_q_gain': LaunchConfiguration('fabrik_q_gain')},
                 {'fabrik_q_reg': LaunchConfiguration('fabrik_q_reg')},
+                {'fabrik_smooth_q': LaunchConfiguration('fabrik_smooth_q')},
+                {'fabrik_relax_pos': LaunchConfiguration('fabrik_relax_pos')},
+                {'fabrik_max_step_deg': LaunchConfiguration('fabrik_max_step_deg')},
+                {'fabrik_orient_gate_mul': LaunchConfiguration('fabrik_orient_gate_mul')},
+                # Debug
+                {'debug_viz': LaunchConfiguration('debug_viz')},
+                {'debug_max_points': LaunchConfiguration('debug_max_points')},
             ],
         ),
         Node(

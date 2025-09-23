@@ -11,12 +11,12 @@ from rclpy.logging import get_logger
 # ================================================================
 class KinematicModel:
     """
-    Loads PiPER 6-DoF URDF and exposes:
+    PiPER 6-DoF URDF 로딩:
       - forward_kinematics(q): (4x4 T_ee, [T_joint1..T_joint6])
       - jacobian(q): 6x6 geometric Jacobian at EE
       - joint_names, lower/upper limits (rad)
-    Also estimates 'd6' (distance from joint6 origin to EE along joint6 axis)
-    to support wrist-center decoupling.
+    또한 EE 프레임에서 joint6 원점까지의 고정 오프셋 r_ee_to_j6_ee(3,) 저장
+    (FABRIK에서 '워리스트 타깃'을 정확히 계산하기 위해 사용)
     """
     def __init__(self):
         try:
@@ -30,12 +30,12 @@ class KinematicModel:
 
         self.urdf_file = urdf_file
 
-        # Build Pinocchio model
+        # Pinocchio
         self.robot = pin.robot_wrapper.RobotWrapper.BuildFromURDF(urdf_file)
         self.model = self.robot.model
         self.data = self.robot.data
 
-        # EE frame: prefer 'link6', else last frame
+        # EE frame
         self.ee_frame_id = None
         self.ee_link_name = "link6"
         try:
@@ -49,7 +49,7 @@ class KinematicModel:
             if last_id >= 0:
                 self.ee_frame_id = last_id
 
-        # Joint names (first 6 one-DoF joints)
+        # Joint names (6 DoF)
         names = []
         for i in range(1, 7):
             nm = f"joint{i}"
@@ -62,7 +62,7 @@ class KinematicModel:
             names = [j.name for j in self.model.joints if j.nq > 0][:6]
         self.joint_names = names
 
-        # Limits
+        # Limits from URDF
         lower, upper = [], []
         root = ET.parse(urdf_file).getroot()
         lim_map = {}
@@ -79,7 +79,7 @@ class KinematicModel:
 
         self.logger = get_logger('ik_solvers')
 
-        # Estimate d6
+        # (이전) d6 추정은 남겨두되, FABRIK에서는 사용하지 않음
         try:
             qzero = np.zeros(6, dtype=float)
             self._full_fk(qzero)
@@ -93,7 +93,25 @@ class KinematicModel:
         except Exception:
             self.d6 = 0.0
 
-        # Default joint roles (can be overridden)
+        # --- EE 프레임에서 joint6 원점까지의 고정 오프셋 저장 ---
+        try:
+            qzero = np.zeros(6, dtype=float)
+            self._full_fk(qzero)
+            j6_name = self.joint_names[-1]
+            self.j6_id = self.model.getJointId(j6_name)
+
+            Tj6 = self.data.oMi[self.j6_id]       # base→joint6
+            Tee = self.data.oMf[self.ee_frame_id] # base→EE
+
+            # EE frame에서 joint6 원점까지 벡터 r_ee_to_j6_ee
+            r_world = Tj6.translation - Tee.translation     # world
+            R_ee    = Tee.rotation
+            self.r_ee_to_j6_ee = R_ee.T @ r_world           # (3,)
+        except Exception:
+            self.j6_id = None
+            self.r_ee_to_j6_ee = np.zeros(3)  # 폴백
+
+        # 기본 joint 역할(필요 시 노드에서 override)
         self.joint_roles = ["pivot","hinge","hinge","pivot","hinge","pivot"]
 
     # ---------- Core geometry ----------
@@ -144,6 +162,8 @@ class IKSolverBase(ABC):
     def __init__(self, kinematics: KinematicModel):
         self.kinematics = kinematics
         self.joint_names = kinematics.joint_names
+        # solve() 호출 후 여기 담김(시각화용)
+        self.debug = None
 
     @abstractmethod
     def solve(self, target_pose: np.ndarray, q_seed=None):
@@ -167,19 +187,35 @@ class JacobianIKSolver(IKSolverBase):
 
     def _se3_error_local(self, T_current, T_target):
         dMi = pin.SE3(T_current).actInv(pin.SE3(T_target))
-        err = pin.log(dMi).vector  # [vx,vy,vz, wx,wy,wz], where ||w|| = angle
+        err = pin.log(dMi).vector  # [vx,vy,vz, wx,wy,wz]
         return err
 
     def solve(self, target_pose, q_seed=None):
         kin = self.kinematics
         q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
 
+        # ---- debug buffers ----
+        ee_positions = []
+        pos_errs = []
+        ori_errs = []
+
         lam = self.lmbda
-        for _ in range(self.max_iter):
+        for it in range(self.max_iter):
             T_c, _ = kin.forward_kinematics(q)
             err6 = self._se3_error_local(T_c, target_pose)
             pe, re = np.linalg.norm(err6[:3]), np.linalg.norm(err6[3:])
+
+            # debug record
+            ee_positions.append(T_c[:3, 3].copy())
+            pos_errs.append(float(pe)); ori_errs.append(float(re))
+
             if pe < self.tol_pos and re < self.tol_rot:
+                self.debug = {
+                    "iters": it+1,
+                    "ee_positions": ee_positions,
+                    "pos_errs": pos_errs,
+                    "ori_errs": ori_errs,
+                }
                 return kin.clamp(q), True
 
             W = np.diag([self.w_pos]*3 + [self.w_rot]*3)
@@ -190,45 +226,54 @@ class JacobianIKSolver(IKSolverBase):
 
             # backtracking line search
             alpha = self.alpha
+            improved = False
             for _ in range(5):
                 q_try = kin.clamp(q + alpha * dq_nom)
                 T_try, _ = kin.forward_kinematics(q_try)
                 e_try = self._se3_error_local(T_try, target_pose)
                 if np.linalg.norm(W @ e_try) < np.linalg.norm(e):
                     q = q_try
+                    improved = True
                     break
                 alpha *= 0.5
-            else:
+            if not improved:
                 lam *= 2.0
 
+        # debug on exit
+        self.debug = {
+            "iters": self.max_iter,
+            "ee_positions": ee_positions,
+            "pos_errs": pos_errs,
+            "ori_errs": ori_errs,
+        }
         return kin.clamp(q), False
 
 
 # ================================================================
-#  FABRIK (adapted for serial robots: hinge/pivot/pris)
+#  FABRIK (adapted for serial robots) + robust damping + debug
 # ================================================================
 class FABRIKSolver(IKSolverBase):
     """
-    FABRIK (adapted for serial robots: hinge/pivot/prismatic) with robust damping.
-    - Orientation gating: far → position first, near → pose matching
-    - Position relax (blend), per-joint step cap, q smoothing, cost backtracking
+    FABRIK (hinge/pivot/prismatic) with damping/gating and debug traces.
+    - 현재 워리스트 = joint6 원점 (정확)
+    - 타깃 워리스트 = p_t + R_t @ r_ee_to_j6_ee (정확)
+    - 게이팅: EE 오차가 아닌 '워리스트 위치 오차'로 판단 (중요!)
     """
     def __init__(self, kinematics: KinematicModel):
         super().__init__(kinematics)
-        # --- tolerances ---
+        # tolerances
         self.max_iter = 120
         self.tol_pos = 1e-3
         self.tol_rot = np.deg2rad(1.0)
-
-        # --- update controls ---
-        self.q_gain = 0.9         # base joint update gain
-        self.q_reg  = 0.02        # weak regularization to mid-range
-        self.smooth_q = 0.30      # EMA smoothing of q per iteration (0~1)
-        self.relax_pos = 0.30     # blend new chain positions p with previous (0~1)
-        self.max_step_deg = 6.0   # per-joint per-iter cap (deg)
-        self.orient_gate_mul = 5.0  # start enforcing orientation when pos_err < mul*tol_pos
-
+        # update controls
+        self.q_gain = 0.9
+        self.q_reg  = 0.02
+        self.smooth_q = 0.30
+        self.relax_pos = 0.30
+        self.max_step_deg = 6.0
+        self.orient_gate_mul = 5.0
         self.axis_parallel_tol = 0.9
+
         lo, hi = kinematics.lower, kinematics.upper
         mid = np.where(np.isfinite(lo + hi), 0.5 * (lo + hi), 0.0)
         self.q_mid = np.where(np.isfinite(mid), mid, 0.0)
@@ -253,17 +298,11 @@ class FABRIKSolver(IKSolverBase):
         kin = self.kinematics
         Tee, Ts = kin.forward_kinematics(q)
 
-        p = [T[:3, 3].copy() for T in Ts]  # p[0..5]
+        p = [T[:3, 3].copy() for T in Ts]  # p[0..5] = 각 조인트 원점
         R = [T[:3, :3].copy() for T in Ts]
 
-        # wrist center
-        if abs(kin.d6) > 1e-9:
-            Jw = kin.jacobian(q, ref_frame=pin.ReferenceFrame.WORLD)
-            a6 = np.array(Jw[3:, 5]).reshape(3,)
-            a6 = self._unit(a6) if np.linalg.norm(a6) > 1e-12 else R[-1][:, 2]
-            p_wc = Tee[:3, 3] - kin.d6 * a6
-        else:
-            p_wc = Tee[:3, 3].copy()
+        # --- 현재 워리스트 = joint6 원점 ---
+        p_wc = Ts[-1][:3, 3].copy()
         p.append(p_wc)  # p[6]
 
         # world axes & link lengths
@@ -308,18 +347,12 @@ class FABRIKSolver(IKSolverBase):
                 A.append(w / np.linalg.norm(w))
         return np.vstack(A)
 
-    def _wrist_center(self, q, Tee=None, axes_world=None):
+    def _wrist_center(self, q, Tee=None, Ts=None):
+        """현재 워리스트(= joint6 원점) 위치 반환"""
         kin = self.kinematics
-        if Tee is None:
-            Tee, _ = kin.forward_kinematics(q)
-        if abs(getattr(kin, "d6", 0.0)) < 1e-9:
-            return Tee[:3, 3]
-        if axes_world is None:
-            axes_world = self._axes_world(q)
-        a6 = axes_world[5]
-        if np.linalg.norm(a6) < 1e-12:
-            a6 = Tee[:3, :3][:, 2]
-        return Tee[:3, 3] - kin.d6 * (a6 / (np.linalg.norm(a6) + 1e-12))
+        if Ts is None:
+            _, Ts = kin.forward_kinematics(q)
+        return Ts[-1][:3, 3].copy()
 
     # ---------- forward/backward ----------
     def _forward_stage(self, p, x, y, z, L, types, target_p, target_R, fix_orientation=True):
@@ -410,7 +443,7 @@ class FABRIKSolver(IKSolverBase):
 
         Tee, Ts = kin.forward_kinematics(q)
         axes_world = self._axes_world(q)
-        wc_cur = self._wrist_center(q, Tee, axes_world)
+        wc_cur = self._wrist_center(q, Tee=Tee, Ts=Ts)
         wc_des = p_des[6]
         g = self.q_gain if gain is None else float(gain)
 
@@ -422,7 +455,7 @@ class FABRIKSolver(IKSolverBase):
             pj = Ts[i][:3, 3]
 
             if roles[i] == "pivot":
-                # twist around axis using projected wrist vector
+                # 축에 수직인 '관절→워리스트' 투영 벡터로 twist 각도를 계산
                 r_cur = wc_cur - pj
                 r_des = wc_des - p_des[i]
                 r_cur -= a * np.dot(a, r_cur)
@@ -455,35 +488,54 @@ class FABRIKSolver(IKSolverBase):
         # base info
         p, x, y, z, L, axes, is_pris = self._frame_arrays(q)
         base_p = p[0].copy()
-        _, Ts = kin.forward_kinematics(q)
-        base_R = Ts[0][:3, :3].copy()
+        _, Ts0 = kin.forward_kinematics(q)
+        base_R = Ts0[0][:3, :3].copy()
 
         p_t = target_pose[:3, 3].copy()
         R_t = target_pose[:3, :3].copy()
-        target_wc = p_t - kin.d6 * R_t[:, 2] if abs(kin.d6) > 1e-6 else p_t
 
+        # --- 타깃 워리스트: EE 타깃에서 joint6 오프셋(EE frame)을 회전/이동 ---
+        r_ee_to_j6 = getattr(kin, "r_ee_to_j6_ee", np.zeros(3))
+        target_wc = p_t + R_t @ r_ee_to_j6
+
+        # reachability (워리스트 타깃 기준)
         if np.linalg.norm(target_wc - base_p) > (np.sum(L) + 1e-6):
+            self.debug = None
             return kin.clamp(q), False
 
         max_step = np.deg2rad(self.max_step_deg)
         local_gain = self.q_gain
 
-        # helper to compute EE cost
-        def ee_cost(qv):
-            Tee, _ = kin.forward_kinematics(qv)
+        # ---- debug buffers ----
+        ee_positions = []
+        pos_errs = []
+        ori_errs = []
+        wrist_errs = []   # << 추가: 워리스트 위치 오차 기록
+        gates = []
+
+        # helper to compute EE cost + wrist err
+        def eval_all(qv, p_list=None):
+            Tee, Ts = kin.forward_kinematics(qv)
             dp = float(np.linalg.norm(Tee[:3,3] - p_t))
             M = Tee[:3,:3] @ R_t.T
             tr = np.clip((np.trace(M) - 1.0) * 0.5, -1.0, 1.0)
             ang = float(np.arccos(tr))
-            return dp, ang, dp + ang  # simple additive cost
+            if p_list is None:
+                # compute wrist from Ts if p_list not given
+                wc = Ts[-1][:3, 3]
+            else:
+                wc = p_list[6]
+            werr = float(np.linalg.norm(wc - target_wc))
+            return Tee[:3,3].copy(), dp, ang, (dp + ang), werr
 
-        # initial cost
-        pe, oe, cost_prev = ee_cost(q)
+        # initial
+        ee_pos, pe, oe, cost_prev, werr = eval_all(q, p)
+        ee_positions.append(ee_pos); pos_errs.append(pe); ori_errs.append(oe); wrist_errs.append(werr); gates.append(False)
 
         ok = False
-        for _ in range(self.max_iter):
-            # orientation gating: enforce R only when close in position
-            fix_orientation = (pe < self.orient_gate_mul * self.tol_pos)
+        for it in range(self.max_iter):
+            # ---------- 게이팅: 워리스트 오차로 판단 (중요) ----------
+            fix_orientation = (werr < self.orient_gate_mul * self.tol_pos)
 
             # store previous chain to relax later
             p_prev = [pi.copy() for pi in p]
@@ -513,26 +565,38 @@ class FABRIKSolver(IKSolverBase):
             else:
                 q = q_step
 
-            # evaluate cost, backtrack if worse
-            pe, oe, cost_now = ee_cost(q)
+            # evaluate (EE + wrist)
+            ee_pos, pe, oe, cost_now, werr = eval_all(q)  # p는 아래에서 새로 갱신
+
+            # backtrack if worse on EE cost
             if cost_now > cost_prev:
-                # backtrack & reduce local gain a bit
                 q = kin.clamp(0.5 * (q_prev + q))
+                ee_pos, pe, oe, cost_now, werr = eval_all(q)
+
                 local_gain = max(0.4 * local_gain, 0.15 * self.q_gain)
-                # recalc cost after backtrack
-                pe, oe, cost_now = ee_cost(q)
             else:
-                # gentle recovery of gain
                 local_gain = min(max(local_gain, 0.5*self.q_gain) * 1.05, self.q_gain)
 
-            # convergence
+            # debug rec
+            ee_positions.append(ee_pos); pos_errs.append(pe); ori_errs.append(oe); wrist_errs.append(werr); gates.append(bool(fix_orientation))
+
+            # convergence (EE 기준)
             if pe < self.tol_pos and oe < self.tol_rot:
                 ok = True
                 break
 
-            # refresh frames for next loop
+            # refresh frames for next iter (p[6]도 함께 갱신되어 다음 werr 계산에 사용)
             p, x, y, z, L, axes, is_pris = self._frame_arrays(q)
             cost_prev = cost_now
 
+        # save debug (마지막 체인 좌표도 저장)
+        self.debug = {
+            "iters": len(ee_positions),
+            "ee_positions": ee_positions,
+            "pos_errs": pos_errs,
+            "ori_errs": ori_errs,
+            "wrist_errs": wrist_errs,   # << 추가
+            "gates": gates,             # True면 orientation on
+            "final_chain_p": p,         # [p0..p6] (마지막 반복의 체인 노드)
+        }
         return kin.clamp(q), ok
-
