@@ -15,17 +15,27 @@ def generate_launch_description():
         robot_desc = infp.read()
 
     return LaunchDescription([
-        # ---- declare CLI arguments ----
-        DeclareLaunchArgument(
-            'solver',
-            default_value='jacobian',
-            description="IK solver: 'jacobian' or 'fabrik'"
-        ),
-        DeclareLaunchArgument(
-            'publish_joint_rate_hz',
-            default_value='30',
-            description='JointState publish throttle (Hz)'
-        ),
+        # ---- CLI args ----
+        DeclareLaunchArgument('solver', default_value='jacobian',
+                              description="IK solver: 'jacobian' or 'fabrik'"),
+        DeclareLaunchArgument('publish_joint_rate_hz', default_value='30'),
+        DeclareLaunchArgument('joint_roles_override', default_value=''),
+
+        # Jacobian params
+        DeclareLaunchArgument('jacobian_max_iter', default_value='150'),
+        DeclareLaunchArgument('jacobian_tol_pos', default_value='0.001'),
+        DeclareLaunchArgument('jacobian_tol_rot_deg', default_value='1.0'),
+        DeclareLaunchArgument('jacobian_lambda', default_value='0.05'),
+        DeclareLaunchArgument('jacobian_alpha', default_value='0.7'),
+        DeclareLaunchArgument('jacobian_w_pos', default_value='1.0'),
+        DeclareLaunchArgument('jacobian_w_rot', default_value='0.7'),
+
+        # FABRIK params
+        DeclareLaunchArgument('fabrik_max_iter', default_value='120'),
+        DeclareLaunchArgument('fabrik_tol_pos', default_value='0.001'),
+        DeclareLaunchArgument('fabrik_tol_rot_deg', default_value='1.0'),
+        DeclareLaunchArgument('fabrik_q_gain', default_value='0.9'),
+        DeclareLaunchArgument('fabrik_q_reg', default_value='0.02'),
 
         # ---- nodes ----
         Node(
@@ -43,6 +53,21 @@ def generate_launch_description():
             parameters=[
                 {'solver': LaunchConfiguration('solver')},
                 {'publish_joint_rate_hz': LaunchConfiguration('publish_joint_rate_hz')},
+                {'joint_roles_override': LaunchConfiguration('joint_roles_override')},
+                # Jacobian
+                {'jacobian_max_iter': LaunchConfiguration('jacobian_max_iter')},
+                {'jacobian_tol_pos': LaunchConfiguration('jacobian_tol_pos')},
+                {'jacobian_tol_rot_deg': LaunchConfiguration('jacobian_tol_rot_deg')},
+                {'jacobian_lambda': LaunchConfiguration('jacobian_lambda')},
+                {'jacobian_alpha': LaunchConfiguration('jacobian_alpha')},
+                {'jacobian_w_pos': LaunchConfiguration('jacobian_w_pos')},
+                {'jacobian_w_rot': LaunchConfiguration('jacobian_w_rot')},
+                # FABRIK
+                {'fabrik_max_iter': LaunchConfiguration('fabrik_max_iter')},
+                {'fabrik_tol_pos': LaunchConfiguration('fabrik_tol_pos')},
+                {'fabrik_tol_rot_deg': LaunchConfiguration('fabrik_tol_rot_deg')},
+                {'fabrik_q_gain': LaunchConfiguration('fabrik_q_gain')},
+                {'fabrik_q_reg': LaunchConfiguration('fabrik_q_reg')},
             ],
         ),
         Node(
