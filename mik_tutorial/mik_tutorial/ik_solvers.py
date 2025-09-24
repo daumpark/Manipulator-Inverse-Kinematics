@@ -269,7 +269,6 @@ class FABRIKSolver(IKSolverBase):
         self.q_gain = 0.9
         self.q_reg  = 0.02
         self.smooth_q = 0.30
-        self.relax_pos = 0.30
         self.max_step_deg = 6.0
         self.orient_gate_mul = 5.0
         self.axis_parallel_tol = 0.9
@@ -482,121 +481,170 @@ class FABRIKSolver(IKSolverBase):
 
     # ---------- 메인 ----------
     def solve(self, target_pose: np.ndarray, q_seed=None):
+        """
+        Modified FABRIK solver with:
+        - reachability clamp for wrist target (inner/outer shells)
+        - early-exit with pos-only aware success check
+        - robust accept/backtrack: half-step try, else full rollback (never accept a worse step)
+        """
+        import numpy as np
         kin = self.kinematics
+
+        # --- seed & clamp
         q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
 
-        # base info
+        # --- current chain geometry
         p, x, y, z, L, axes, is_pris = self._frame_arrays(q)
         base_p = p[0].copy()
         _, Ts0 = kin.forward_kinematics(q)
         base_R = Ts0[0][:3, :3].copy()
 
+        # --- target pose (EE)
         p_t = target_pose[:3, 3].copy()
         R_t = target_pose[:3, :3].copy()
 
-        # --- 타깃 워리스트: EE 타깃에서 joint6 오프셋(EE frame)을 회전/이동 ---
+        # --- wrist target (EE + offset in EE frame)
         r_ee_to_j6 = getattr(kin, "r_ee_to_j6_ee", np.zeros(3))
         target_wc = p_t + R_t @ r_ee_to_j6
 
-        # reachability (워리스트 타깃 기준)
-        if np.linalg.norm(target_wc - base_p) > (np.sum(L) + 1e-6):
-            self.debug = None
-            return kin.clamp(q), False
+        # ▶ (1) REACHABILITY CLAMP for wrist (outer & inner shells)
+        L_arr = np.array(L, dtype=float)
+        r_max = float(np.sum(L_arr)) - 1e-9
+        L_max = float(np.max(L_arr)) if L_arr.size else 0.0
+        r_min = max(L_max - (r_max - L_max), 0.0) + 1e-9  # inner bound for 6R chains
 
+        v_wc = target_wc - base_p
+        d_wc = float(np.linalg.norm(v_wc))
+        if d_wc > r_max:
+            target_wc = base_p + v_wc * (r_max / (d_wc + 1e-12))
+        elif d_wc < r_min:
+            # if target is too close to base, project to inner shell along stable direction
+            dir0 = (p[1] - p[0]) if np.linalg.norm(p[1] - p[0]) > 1e-9 else np.array([1.0, 0.0, 0.0])
+            u = v_wc if d_wc > 1e-9 else dir0
+            u = u / (np.linalg.norm(u) + 1e-12)
+            target_wc = base_p + u * r_min
+
+        # --- step sizing & gains
         max_step = np.deg2rad(self.max_step_deg)
         local_gain = self.q_gain
 
-        # ---- debug buffers ----
-        ee_positions = []
-        pos_errs = []
-        ori_errs = []
-        wrist_errs = []   # << 추가: 워리스트 위치 오차 기록
-        gates = []
+        # --- debug buffers
+        ee_positions, pos_errs, ori_errs, wrist_errs, gates = [], [], [], [], []
 
-        # helper to compute EE cost + wrist err
-        def eval_all(qv, p_list=None):
-            Tee, Ts = kin.forward_kinematics(qv)
-            dp = float(np.linalg.norm(Tee[:3,3] - p_t))
-            M = Tee[:3,:3] @ R_t.T
-            tr = np.clip((np.trace(M) - 1.0) * 0.5, -1.0, 1.0)
+        # ---- helpers
+        def eval_all(qv, consider_ori=True):
+            Tee, _ = kin.forward_kinematics(qv)
+            ee_pos = Tee[:3, 3]
+            dp = float(np.linalg.norm(ee_pos - p_t))
+            R_err = Tee[:3, :3] @ R_t.T
+            tr = np.clip((np.trace(R_err) - 1.0) * 0.5, -1.0, 1.0)
             ang = float(np.arccos(tr))
-            if p_list is None:
-                # compute wrist from Ts if p_list not given
-                wc = Ts[-1][:3, 3]
-            else:
-                wc = p_list[6]
-            werr = float(np.linalg.norm(wc - target_wc))
-            return Tee[:3,3].copy(), dp, ang, (dp + ang), werr
+            wc_cur = ee_pos + Tee[:3, :3] @ r_ee_to_j6
+            werr = float(np.linalg.norm(wc_cur - target_wc))
+            cost = dp + (ang if consider_ori else 0.0)
+            return ee_pos.copy(), dp, ang, cost, werr
 
-        # initial
-        ee_pos, pe, oe, cost_prev, werr = eval_all(q, p)
-        ee_positions.append(ee_pos); pos_errs.append(pe); ori_errs.append(oe); wrist_errs.append(werr); gates.append(False)
+        # --- initial eval
+        ee_pos, pe, oe, _, werr = eval_all(q, consider_ori=False)
+        fix_orientation = (werr < self.orient_gate_mul * self.tol_pos)
+        _, _, _, cost_prev, _ = eval_all(q, consider_ori=fix_orientation)
+
+        ee_positions.append(ee_pos); pos_errs.append(pe); ori_errs.append(oe); wrist_errs.append(werr); gates.append(bool(fix_orientation))
+
+        # ▶ (2) EARLY EXIT (pos-only aware)
+        if (not fix_orientation and pe < self.tol_pos) or (fix_orientation and pe < self.tol_pos and oe < self.tol_rot):
+            self.debug = {
+                "iters": 1,
+                "ee_positions": ee_positions,
+                "pos_errs": pos_errs,
+                "ori_errs": ori_errs,
+                "wrist_errs": wrist_errs,
+                "gates": gates,
+                "final_chain_p": p,
+            }
+            return kin.clamp(q), True
 
         ok = False
-        for it in range(self.max_iter):
-            # ---------- 게이팅: 워리스트 오차로 판단 (중요) ----------
+        for _it in range(self.max_iter):
+            # recompute gate based on current wrist error
             fix_orientation = (werr < self.orient_gate_mul * self.tol_pos)
 
-            # store previous chain to relax later
+            # keep previous chain (for relaxation)
             p_prev = [pi.copy() for pi in p]
+            types = kin.joint_roles  # model-declared roles
 
-            types = kin.joint_roles  # fixed per model
+            # --- FABRIK forward/backward
             self._forward_stage(p, x, y, z, L, types, target_wc, R_t if fix_orientation else None, fix_orientation)
             self._backward_stage(p, x, y, z, L, types, base_p, base_R)
 
-            # position relaxation (blend)
-            if self.relax_pos > 0.0:
-                a = float(self.relax_pos)
-                for i in range(len(p)):
-                    p[i] = (1.0 - a) * p_prev[i] + a * p[i]
-
-            # propose q update
+            # --- propose q
             q_prev = q.copy()
             q_prop = self._positions_to_q(q_prev, p, gain=local_gain)
 
-            # step cap per joint
+            # per-joint step cap
             dq = q_prop - q_prev
             dq = np.clip(dq, -max_step, max_step)
             q_step = kin.clamp(q_prev + dq)
 
             # smoothing
             if self.smooth_q > 0.0:
-                q = kin.clamp((1.0 - self.smooth_q) * q_step + self.smooth_q * q_prev)
+                q_try = kin.clamp((1.0 - self.smooth_q) * q_step + self.smooth_q * q_prev)
             else:
-                q = q_step
+                q_try = q_step
 
-            # evaluate (EE + wrist)
-            ee_pos, pe, oe, cost_now, werr = eval_all(q)  # p는 아래에서 새로 갱신
+            # evaluate trial
+            ee_pos_try, pe_try, oe_try, cost_now, werr_try = eval_all(q_try, consider_ori=fix_orientation)
 
-            # backtrack if worse on EE cost
+            # ▶ (3) ACCEPT/BACKTRACK (strong)
             if cost_now > cost_prev:
-                q = kin.clamp(0.5 * (q_prev + q))
-                ee_pos, pe, oe, cost_now, werr = eval_all(q)
+                # half-step backtrack
+                q_half = kin.clamp(0.5 * (q_prev + q_try))
+                ee_pos_half, pe_half, oe_half, cost_half, werr_half = eval_all(q_half, consider_ori=fix_orientation)
 
-                local_gain = max(0.4 * local_gain, 0.15 * self.q_gain)
+                if cost_half > cost_prev:
+                    # still worse → do NOT accept, full rollback
+                    q = q_prev
+                    local_gain = max(0.4 * local_gain, 0.15 * self.q_gain)
+
+                    # record rolled-back state
+                    ee_pos, pe, oe, _, werr = eval_all(q, consider_ori=fix_orientation)
+                    ee_positions.append(ee_pos); pos_errs.append(pe); ori_errs.append(oe); wrist_errs.append(werr); gates.append(bool(fix_orientation))
+
+                    # refresh frames, keep cost_prev
+                    p, x, y, z, L, axes, is_pris = self._frame_arrays(q)
+                    continue
+                else:
+                    # accept half-step
+                    q = q_half
+                    ee_pos, pe, oe, cost_now, werr = ee_pos_half, pe_half, oe_half, cost_half, werr_half
+                    local_gain = max(0.4 * local_gain, 0.15 * self.q_gain)
             else:
-                local_gain = min(max(local_gain, 0.5*self.q_gain) * 1.05, self.q_gain)
+                # accept trial
+                q = q_try
+                ee_pos, pe, oe, cost_now, werr = ee_pos_try, pe_try, oe_try, cost_now, werr_try
+                # gently restore gain towards q_gain
+                local_gain = min(max(local_gain, 0.5 * self.q_gain) * 1.05, self.q_gain)
 
-            # debug rec
+            # record debug
             ee_positions.append(ee_pos); pos_errs.append(pe); ori_errs.append(oe); wrist_errs.append(werr); gates.append(bool(fix_orientation))
 
-            # convergence (EE 기준)
-            if pe < self.tol_pos and oe < self.tol_rot:
+            # convergence (pos-only aware)
+            if (not fix_orientation and pe < self.tol_pos) or (fix_orientation and pe < self.tol_pos and oe < self.tol_rot):
                 ok = True
                 break
 
-            # refresh frames for next iter (p[6]도 함께 갱신되어 다음 werr 계산에 사용)
+            # prepare next iter
             p, x, y, z, L, axes, is_pris = self._frame_arrays(q)
             cost_prev = cost_now
 
-        # save debug (마지막 체인 좌표도 저장)
+        # finalize debug & return
         self.debug = {
             "iters": len(ee_positions),
             "ee_positions": ee_positions,
             "pos_errs": pos_errs,
             "ori_errs": ori_errs,
-            "wrist_errs": wrist_errs,   # << 추가
-            "gates": gates,             # True면 orientation on
-            "final_chain_p": p,         # [p0..p6] (마지막 반복의 체인 노드)
+            "wrist_errs": wrist_errs,
+            "gates": gates,
+            "final_chain_p": p,
         }
         return kin.clamp(q), ok

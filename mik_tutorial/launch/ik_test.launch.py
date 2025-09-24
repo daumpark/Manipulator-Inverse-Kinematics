@@ -35,7 +35,6 @@ def generate_launch_description():
         DeclareLaunchArgument('fabrik_q_gain', default_value='0.9'),
         DeclareLaunchArgument('fabrik_q_reg', default_value='0.02'),
         DeclareLaunchArgument('fabrik_smooth_q', default_value='0.30'),
-        DeclareLaunchArgument('fabrik_relax_pos', default_value='0.30'),
         DeclareLaunchArgument('fabrik_max_step_deg', default_value='6.0'),
         DeclareLaunchArgument('fabrik_orient_gate_mul', default_value='5.0'),
 
@@ -74,7 +73,6 @@ def generate_launch_description():
                 {'fabrik_q_gain': LaunchConfiguration('fabrik_q_gain')},
                 {'fabrik_q_reg': LaunchConfiguration('fabrik_q_reg')},
                 {'fabrik_smooth_q': LaunchConfiguration('fabrik_smooth_q')},
-                {'fabrik_relax_pos': LaunchConfiguration('fabrik_relax_pos')},
                 {'fabrik_max_step_deg': LaunchConfiguration('fabrik_max_step_deg')},
                 {'fabrik_orient_gate_mul': LaunchConfiguration('fabrik_orient_gate_mul')},
                 # Debug

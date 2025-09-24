@@ -45,7 +45,6 @@ class IKTestNode(Node):
         self.declare_parameter('fabrik_q_gain', 0.9)
         self.declare_parameter('fabrik_q_reg', 0.02)
         self.declare_parameter('fabrik_smooth_q', 0.30)
-        self.declare_parameter('fabrik_relax_pos', 0.30)
         self.declare_parameter('fabrik_max_step_deg', 6.0)
         self.declare_parameter('fabrik_orient_gate_mul', 5.0)
 
@@ -72,7 +71,6 @@ class IKTestNode(Node):
             self.ik_solver.q_gain  = float(self.get_parameter('fabrik_q_gain').value)
             self.ik_solver.q_reg   = float(self.get_parameter('fabrik_q_reg').value)
             self.ik_solver.smooth_q = float(self.get_parameter('fabrik_smooth_q').value)
-            self.ik_solver.relax_pos = float(self.get_parameter('fabrik_relax_pos').value)
             self.ik_solver.max_step_deg = float(self.get_parameter('fabrik_max_step_deg').value)
             self.ik_solver.orient_gate_mul = float(self.get_parameter('fabrik_orient_gate_mul').value)
         else:
