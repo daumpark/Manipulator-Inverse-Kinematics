@@ -29,7 +29,7 @@ def generate_launch_description():
         DeclareLaunchArgument('jacobian_w_rot', default_value='0.7'),
 
         # FABRIK
-        DeclareLaunchArgument('fabrik_max_iter', default_value='5'),
+        DeclareLaunchArgument('fabrik_max_iter', default_value='120'),
         DeclareLaunchArgument('fabrik_tol_pos', default_value='0.001'),
         DeclareLaunchArgument('fabrik_tol_rot_deg', default_value='1.0'),
         DeclareLaunchArgument('fabrik_q_gain', default_value='0.9'),

@@ -118,17 +118,17 @@ class IKTestNode(Node):
         q_neutral = np.array([0, 0.5, 0.5, 0, 0, 0], dtype=float)
         initial_pose, _ = self.ik_solver.kinematics.forward_kinematics(q_neutral)
 
-        int_marker.pose.position.x = float(initial_pose[0,3])
-        int_marker.pose.position.y = float(initial_pose[1,3])
-        int_marker.pose.position.z = float(initial_pose[2,3])
-        quat = R.from_matrix(initial_pose[:3,:3]).as_quat()
+        int_marker.pose.position.x = float(initial_pose[0, 3])
+        int_marker.pose.position.y = float(initial_pose[1, 3])
+        int_marker.pose.position.z = float(initial_pose[2, 3])
+        quat = R.from_matrix(initial_pose[:3, :3]).as_quat()
         int_marker.pose.orientation.x = float(quat[0])
         int_marker.pose.orientation.y = float(quat[1])
         int_marker.pose.orientation.z = float(quat[2])
         int_marker.pose.orientation.w = float(quat[3])
 
         # latest target
-        self.latest_target_pose[:3,:3] = initial_pose[:3,:3]
+        self.latest_target_pose[:3, :3] = initial_pose[:3, :3]
         self.latest_target_pose[:3, 3] = initial_pose[:3, 3]
 
         # visual marker (고정 색)
@@ -248,8 +248,8 @@ class IKTestNode(Node):
         self.marker_pub.publish(sp)
 
         # TEXT (마지막 EE 근처)
-        pe = float(debug_dict["pos_errs"][-1]) if "pos_errs" in debug_dict and len(debug_dict["pos_errs"])>0 else 0.0
-        oe = float(debug_dict["ori_errs"][-1]) if "ori_errs" in debug_dict and len(debug_dict["ori_errs"])>0 else 0.0
+        pe = float(debug_dict["pos_errs"][-1]) if "pos_errs" in debug_dict and len(debug_dict["pos_errs"]) > 0 else 0.0
+        oe = float(debug_dict["ori_errs"][-1]) if "ori_errs" in debug_dict and len(debug_dict["ori_errs"]) > 0 else 0.0
         txt = Marker()
         txt.header.frame_id = "base_link"
         txt.header.stamp = line.header.stamp
@@ -280,8 +280,8 @@ class IKTestNode(Node):
             ll.scale.x = 0.004
             ll.color.r, ll.color.g, ll.color.b, ll.color.a = (0.9, 0.9, 0.1, 0.8)
             pts = []
-            for i in range(len(chain)-1):
-                a = chain[i]; b = chain[i+1]
+            for i in range(len(chain) - 1):
+                a = chain[i]; b = chain[i + 1]
                 pts.append(Point(x=float(a[0]), y=float(a[1]), z=float(a[2])))
                 pts.append(Point(x=float(b[0]), y=float(b[1]), z=float(b[2])))
             ll.points = pts
