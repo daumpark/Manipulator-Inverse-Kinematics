@@ -31,12 +31,6 @@ def generate_launch_description():
         # FABRIK
         DeclareLaunchArgument('fabrik_max_iter', default_value='120'),
         DeclareLaunchArgument('fabrik_tol_pos', default_value='0.001'),
-        DeclareLaunchArgument('fabrik_tol_rot_deg', default_value='1.0'),
-        DeclareLaunchArgument('fabrik_q_gain', default_value='0.9'),
-        DeclareLaunchArgument('fabrik_q_reg', default_value='0.02'),
-        DeclareLaunchArgument('fabrik_smooth_q', default_value='0.30'),
-        DeclareLaunchArgument('fabrik_max_step_deg', default_value='6.0'),
-        DeclareLaunchArgument('fabrik_orient_gate_mul', default_value='5.0'),
 
         # Debug viz
         DeclareLaunchArgument('debug_viz', default_value='true'),
@@ -69,12 +63,6 @@ def generate_launch_description():
                 # FABRIK
                 {'fabrik_max_iter': LaunchConfiguration('fabrik_max_iter')},
                 {'fabrik_tol_pos': LaunchConfiguration('fabrik_tol_pos')},
-                {'fabrik_tol_rot_deg': LaunchConfiguration('fabrik_tol_rot_deg')},
-                {'fabrik_q_gain': LaunchConfiguration('fabrik_q_gain')},
-                {'fabrik_q_reg': LaunchConfiguration('fabrik_q_reg')},
-                {'fabrik_smooth_q': LaunchConfiguration('fabrik_smooth_q')},
-                {'fabrik_max_step_deg': LaunchConfiguration('fabrik_max_step_deg')},
-                {'fabrik_orient_gate_mul': LaunchConfiguration('fabrik_orient_gate_mul')},
                 # Debug
                 {'debug_viz': LaunchConfiguration('debug_viz')},
                 {'debug_max_points': LaunchConfiguration('debug_max_points')},

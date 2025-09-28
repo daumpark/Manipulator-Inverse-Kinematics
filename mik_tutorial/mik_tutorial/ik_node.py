@@ -41,12 +41,6 @@ class IKTestNode(Node):
         # FABRIK
         self.declare_parameter('fabrik_max_iter', 120)
         self.declare_parameter('fabrik_tol_pos', 1e-3)
-        self.declare_parameter('fabrik_tol_rot_deg', 1.0)
-        self.declare_parameter('fabrik_q_gain', 0.9)
-        self.declare_parameter('fabrik_q_reg', 0.02)
-        self.declare_parameter('fabrik_smooth_q', 0.30)
-        self.declare_parameter('fabrik_max_step_deg', 6.0)
-        self.declare_parameter('fabrik_orient_gate_mul', 5.0)
 
         # Debug viz
         self.declare_parameter('debug_viz', True)                  # 디버그 시각화 on/off
@@ -55,24 +49,11 @@ class IKTestNode(Node):
         # ---------------- Kinematics + solver ----------------
         self.kinematics = KinematicModel()
 
-        roles_str = self.get_parameter('joint_roles_override').get_parameter_value().string_value.strip()
-        if roles_str:
-            roles = [s.strip().lower() for s in roles_str.split(',')]
-            if len(roles) == 6 and all(r in ('pivot', 'hinge', 'pris') for r in roles):
-                self.kinematics.set_joint_roles(roles)
-                self.get_logger().info(f"Joint roles override: {self.kinematics.describe_joint_roles()}")
-
         solver_name = self.get_parameter('solver').get_parameter_value().string_value
         if solver_name.lower() == 'fabrik':
             self.ik_solver = FABRIKSolver(self.kinematics)
             self.ik_solver.max_iter = int(self.get_parameter('fabrik_max_iter').value)
             self.ik_solver.tol_pos = float(self.get_parameter('fabrik_tol_pos').value)
-            self.ik_solver.tol_rot = np.deg2rad(float(self.get_parameter('fabrik_tol_rot_deg').value))
-            self.ik_solver.q_gain  = float(self.get_parameter('fabrik_q_gain').value)
-            self.ik_solver.q_reg   = float(self.get_parameter('fabrik_q_reg').value)
-            self.ik_solver.smooth_q = float(self.get_parameter('fabrik_smooth_q').value)
-            self.ik_solver.max_step_deg = float(self.get_parameter('fabrik_max_step_deg').value)
-            self.ik_solver.orient_gate_mul = float(self.get_parameter('fabrik_orient_gate_mul').value)
         else:
             self.ik_solver = JacobianIKSolver(self.kinematics)
             self.ik_solver.max_iter = int(self.get_parameter('jacobian_max_iter').value)

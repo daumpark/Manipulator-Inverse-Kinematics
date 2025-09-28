@@ -231,7 +231,6 @@ class JacobianIKSolver(IKSolverBase):
 
 # ================================================================
 #  FABRIK (Constrained, revolute-only plane projection + limits)
-#  -> cfabrik의 알고리즘을 ROS/Pinocchio 체인으로 이식
 # ================================================================
 class FABRIKSolver(IKSolverBase):
     """

@@ -568,7 +568,7 @@ if __name__ == "__main__":
     kin_model = KinematicModel(urdf_filename=urdf_path)
     solver = InteractiveConstrainedFABRIKSolver(kin_model)
 
-    target = [0.1, 0.1, 0.3]
+    target = [0.4, 0.1, 0.1]
 
     solver.solve_for_real_world(target, tolerance=0.01, max_iterations=15)
 
