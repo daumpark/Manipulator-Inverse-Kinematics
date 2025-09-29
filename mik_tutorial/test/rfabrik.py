@@ -1,376 +1,238 @@
+# -*- coding: utf-8 -*-
+"""
+FABRIK-R 스타일 시각화 (Schilling Titan 2)
+- 논문 표 I의 DH 파라미터 사용
+- 2~4번 관절 공동평면 Φ_{2,3,4}, 5번 관절의 보조 평면 Ω를 이용한 전/후진 반복
+- 교육/시각화용 간소화 구현
+- [FIX] 인덱스/앵커링: p0(월드 원점) 고정, p1은 조인트1의 DH 파라미터로부터 매 반복 강제 설정
+"""
+
 import numpy as np
-import math
+from math import cos, sin
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+# --------------------------
+# Titan2 DH 파라미터 (논문 표 I; m/deg)
+# --------------------------
+T2_d  = np.array([0.123, 0, 0, 0.25075, 0, 0.091], dtype=float)
+T2_a  = np.array([0, 0, 0.28503, -0.02198, 0, 0], dtype=float)
+T2_alpha_deg = np.array([0, -90, 0, 90, -90, 90], dtype=float)
+T2_alpha = np.deg2rad(T2_alpha_deg)
 
-# ===============================
-# Utility helpers
-# ===============================
-def _unit(v, eps=1e-12):
-    v = np.asarray(v, dtype=float).reshape(3,)
+# --------------------------
+# 유틸/수학 함수
+# --------------------------
+def dh_transform(theta, d, a, alpha):
+    """표준 DH 변환행렬 (θ: z회전, d: z이동, a: x이동, α: x회전)."""
+    ct, st = np.cos(theta), np.sin(theta)
+    ca, sa = np.cos(alpha), np.sin(alpha)
+    return np.array([
+        [ct, -st*ca,  st*sa, a*ct],
+        [st,  ct*ca, -ct*sa, a*st],
+        [0.,     sa,     ca,     d],
+        [0.,    0.,     0.,     1.]
+    ])
+
+def forward_kinematics_titan2(thetas):
+    """
+    Titan2의 DH 파라미터로 p0..p6(7개 점) 좌표 반환.
+    thetas: 6개 조인트 각도(rad)
+    """
+    T = np.eye(4)
+    pts = [T[:3,3].copy()]  # p0 (base at world origin)
+    for i in range(6):
+        T = T @ dh_transform(thetas[i], T2_d[i], T2_a[i], T2_alpha[i])
+        pts.append(T[:3,3].copy())
+    return np.array(pts)  # (7,3)
+
+def segment_lengths_from_points(points):
+    """연속 점 사이 거리(세그먼트 길이) 6개."""
+    return np.linalg.norm(points[1:] - points[:-1], axis=1)
+
+def normalize(v):
     n = np.linalg.norm(v)
-    if n < eps:
-        return np.array([1.0, 0.0, 0.0])
-    return v / n
+    return v if n < 1e-12 else v / n
 
+def project_point_to_plane(p, n, p0):
+    """법선 n, 기준점 p0로 정의된 평면에 점 p를 직교사영."""
+    n = normalize(n)
+    return p - np.dot(p - p0, n) * n
 
-def _any_perp(a):
-    a = _unit(a)
-    ref = np.array([1., 0., 0.]) if abs(a[0]) < 0.9 else np.array([0., 1., 0.])
-    return _unit(np.cross(a, ref))
-
-
-def _proj_on_plane(v, n):
-    n = _unit(n)
-    return v - np.dot(v, n) * n
-
-
-def _rodrigues(v, axis, theta):
-    axis = _unit(axis)
-    v = np.asarray(v, dtype=float).reshape(3,)
-    K = np.array([[0, -axis[2], axis[1]],
-                  [axis[2], 0, -axis[0]],
-                  [-axis[1], axis[0], 0]], dtype=float)
-    I = np.eye(3)
-    return (I + math.sin(theta) * K + (1 - math.cos(theta)) * (K @ K)) @ v
-
-
-# ===============================
-# FABRIK-R Standalone Solver
-# ===============================
-class FabrikRSolver:
+def fabrik_place(prev, curr, length):
     """
-    Standalone FABRIK-R (hinge/pivot 1-DOF chain) with interactive visualization.
-
-    Inputs:
-      - joint_positions: (N,3) initial joint positions p1..pN (base p0 is separate)
-      - joint_axes:      (N,3) per-joint axis vector (hinge and pivot use same 'axis' carrier)
-      - joint_types:     list of 'hinge' or 'pivot' of length N
-      - base_position:   3-vector p0 (fixed)
-
-    Behavior:
-      - Stores per-step states in `self.history` for visualization:
-        dict(title, positions, axes, error)
-      - Visualization exposes: run_interactive_viewer(), on_key_press(), redraw()
+    FABRIK 한 스텝: prev(고정)에서 curr 방향으로 length만큼 떨어진 지점.
+    (curr는 원하는 방향성 제공용)
     """
+    d = np.linalg.norm(curr - prev)
+    if d < 1e-12:
+        return prev.copy()
+    return prev + (curr - prev) * (length / d)
 
-    def __init__(self, joint_positions, joint_axes, joint_types, base_position=None):
-        self.p0 = np.zeros(3, dtype=float) if base_position is None else np.asarray(base_position, float).reshape(3,)
-        self.p = np.array(joint_positions, dtype=float).reshape(-1, 3)
-        self.axes = np.array(joint_axes, dtype=float).reshape(-1, 3)
-        self.kinds = list(joint_types)
-        assert len(self.p) == len(self.axes) == len(self.kinds), "Mismatched chain sizes."
-        self.N = len(self.p)
+def make_vertical_plane_through(base_point, through_point):
+    """
+    베이스점과 임의의 점을 지나는 '수직(=법선이 XY평면에만 존재)' 평면 생성.
+    반환: (법선벡터, 평면상의 점)
+    """
+    z = np.array([0.0, 0.0, 1.0])
+    v = through_point - base_point
+    v_xy = np.array([v[0], v[1], 0.0])
+    if np.linalg.norm(v_xy) < 1e-9:
+        normal = np.array([1.0, 0.0, 0.0])  # 바로 위라면 YZ평면
+    else:
+        normal = np.cross(z, v_xy)
+    return normalize(normal), base_point.copy()
 
-        # link lengths: d0 = |p1 - p0|, d1 = |p2 - p1|, ..., d_{N-1}
-        self.d = np.zeros(self.N, dtype=float)
-        self.d[0] = np.linalg.norm(self.p[0] - self.p0)
-        for i in range(1, self.N):
-            self.d[i] = np.linalg.norm(self.p[i] - self.p[i - 1])
-        self.total_len = float(np.sum(self.d))
+def draw_plane(ax, normal, point, size, alpha_val=0.18, color=None):
+    """시각화를 위한 직사각형 평면 패치."""
+    n = normalize(normal)
+    # 평면을 생성할 두 기저 벡터
+    a = np.array([1.0, 0.0, 0.0]) if abs(np.dot(n, [1,0,0])) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = normalize(np.cross(n, a))
+    v = normalize(np.cross(n, u))
+    s = size
+    corners = np.array([
+        point + s*( u + v),
+        point + s*( u - v),
+        point + s*(-u - v),
+        point + s*(-u + v)
+    ])
+    poly = Poly3DCollection([corners], alpha=alpha_val, facecolor=color)
+    ax.add_collection3d(poly)
 
-        self.history = []
-        # viz fields
-        self.fig = None
-        self.ax = None
-        self.current_step = 0
-        self.target = None
+# --------------------------
+# [핵심 FIX] p1을 DH로부터 강제 앵커링
+# --------------------------
+def joint1_pose_from_dh(base_origin, theta1):
+    """
+    조인트1(DH의 0번째 행)로부터 p1의 '월드' 위치를 계산.
+    Titan2 표 I에서는 a0=0, alpha0=0 → p1 = p0 + [0,0,d0] (theta1와 무관)
+    일반성 위해 DH로 계산한 뒤 base_origin을 더해준다.
+    """
+    T1 = dh_transform(theta1, T2_d[0], T2_a[0], T2_alpha[0])
+    return base_origin + T1[:3, 3]
 
-    # -------------- Algorithm 2 helpers (Find concurrent & theta) --------------
-    def _find_concurrent_index(self, i, ev_init, forward=True):
-        step = -1 if forward else 1
-        start = i - 1 if forward else i + 1
-        for j in range(start, -1 if forward else self.N, step):
-            if j < 0 or j >= self.N:
-                break
-            ax = self.axes[j]
-            if np.linalg.norm(np.cross(_unit(ev_init), _unit(ax))) > 1e-6:
-                return j
-        return 0 if forward else (self.N - 1)
+# --------------------------
+# FABRIK-R (간소화) 반복
+# --------------------------
+def fabrik_r_iterate(points, lengths, target, base_origin, thetas_for_dh, max_iter=60, tol=1e-3):
+    """
+    points: 초기 p0..p6 (p0=base 고정)
+    lengths: 6개 세그먼트 길이
+    target: p6 목표
+    base_origin: 월드 좌표계 베이스(p0)
+    thetas_for_dh: DH 계산용 각도(특히 theta1). Titan2에선 p1 위치는 theta1와 무관하나 일반성 유지용.
+    """
+    pts = points.copy()
 
-    def _solve_theta_candidates(self, El, Ev, alpha_beta_gamma):
-        El = _unit(El); Ev = _unit(Ev)
-        alpha, beta, gamma = alpha_beta_gamma
-        t = np.cross(El, Ev)
+    # --- 고정 앵커 ---
+    p0 = base_origin.copy()
+    p1_anchor = joint1_pose_from_dh(p0, thetas_for_dh[0])
 
-        K1 = alpha*Ev[0] + beta*Ev[1] + gamma*Ev[2]
-        K2 = np.dot(El, Ev) * (alpha*El[0] + beta*El[1] + gamma*El[2])
-        K3 = alpha*t[0] + beta*t[1] + gamma*t[2]
+    # 초기 고정 상태 반영
+    pts[0] = p0
+    pts[1] = p1_anchor
 
-        A, B, C = (K1 - K2), K3, K2
-        R = math.hypot(A, B)
-        if R < 1e-12:
-            return []
+    history = [pts.copy()]
 
-        val = -C / R
-        if val < -1.0 - 1e-12 or val > 1.0 + 1e-12:
-            return []
-        val = min(1.0, max(-1.0, val))
+    # 초기 Φ 평면(시각화용)
+    phi_normal, phi_point = make_vertical_plane_through(p0, pts[5])
+    omega_n, omega_p = phi_normal.copy(), phi_point.copy()
 
-        delta = math.atan2(B, A)
-        phi = math.acos(val)
-        thetas = []
-        for sgn in (+1, -1):
-            base = (delta + sgn * phi) / 2.0
-            thetas.append(base)
-            thetas.append(base + math.pi)
-        return [((t + 4*math.pi) % (2*math.pi)) for t in thetas]
+    for it in range(max_iter):
+        # ----- 고정점 재적용 (전진 단계 전에 p0/p1을 확실히 고정) -----
+        print(it)
+        pts[0] = p0
+        pts[1] = p1_anchor
 
-    def _define_plane_i(self, i, p_prev, forward=True):
-        prev_idx = i + 1 if forward else (i - 1)
-        El = self.axes[prev_idx]
+        # ---------- Forward ----------
+        pts[6] = target.copy()                     # 엔드 이펙터를 목표로
+        pts[5] = fabrik_place(pts[6], pts[5], lengths[5])
 
-        Ev_init = El.copy()
-        j = self._find_concurrent_index(i, Ev_init, forward=forward)
+        # Ω: 베이스와 p5'을 지나는 수직 평면
+        omega_n, omega_p = make_vertical_plane_through(p0, pts[5])
 
-        pj = self.p[j]
-        alpha_beta_gamma = (p_prev - pj)
+        # p4, p3, p2를 Ω에 두고 당김 (p1은 고정이므로 업데이트 금지)
+        for i in [4, 3, 2]:
+            proj = project_point_to_plane(pts[i], omega_n, omega_p)
+            pts[i] = fabrik_place(pts[i+1], proj, lengths[i])
 
-        cand = _proj_on_plane((pj - p_prev), El)
-        Ev = _any_perp(El) if (np.linalg.norm(cand) < 1e-9) else _unit(cand)
+        # ---------- Backward ----------
+        # 고정 앵커 재설정
+        pts[0] = p0
+        pts[1] = p1_anchor
 
-        thetas = self._solve_theta_candidates(El, Ev, alpha_beta_gamma)
+        # Φ: 베이스와 p5'을 포함하는 수직평면(2–4 공면)
+        phi_normal, phi_point = make_vertical_plane_through(p0, pts[5])
 
-        best = None
-        best_norm = -1.0
-        for th in thetas:
-            En = (math.cos(2*th) * Ev
-                  + (1 - math.cos(2*th)) * (np.dot(El, Ev)) * El
-                  + math.sin(2*th) * np.cross(El, Ev))
-            En = _unit(En)
-            vproj = _proj_on_plane((pj - p_prev), En)
-            nv = np.linalg.norm(vproj)
-            if nv > best_norm:
-                best_norm = nv
-                best = En
-        if best is None:
-            best = _unit(_any_perp(El))
-        return best
+        # p2..p6: FABRIK 전진, 단 p2,p3,p4는 Φ에 사영
+        for i in [1, 2, 3, 4, 5]:  # i는 세그먼트 인덱스 (p_i → p_{i+1})
+            prev = pts[i]          # p1은 이미 고정
+            nxt = pts[i+1]
+            if i+1 in (2, 3, 4):
+                nxt = project_point_to_plane(nxt, phi_normal, phi_point)
+            pts[i+1] = fabrik_place(prev, nxt, lengths[i])
 
-    # -------------- FABRIK forward/backward steps --------------
-    def _step_forward(self, target, record=True, iter_idx=0):
-        p = self.p.copy()
-        p[-1] = target
-        if record:
-            self._record_state("Iter %d (Tip to Target)" % iter_idx, p)
+        history.append(pts.copy())
+        if np.linalg.norm(pts[6] - target) < tol:
+            break
 
-        for i in range(self.N - 2, -1, -1):
-            p_prev = p[i + 1]
-            axis_prev = self.axes[i + 1]
-            if self.kinds[i + 1] == 'hinge':
-                En_prev = _unit(axis_prev)
-            else:
-                hint = _proj_on_plane((self.p[i] - p_prev), axis_prev)
-                En_prev = _unit(np.cross(axis_prev, _unit(hint) if np.linalg.norm(hint) > 1e-9 else _any_perp(axis_prev)))
+    return pts, history, phi_normal, phi_point, omega_n, omega_p
 
-            dir_hint = _proj_on_plane((self.p[i] - p_prev), En_prev)
-            if np.linalg.norm(dir_hint) < 1e-9:
-                hint2 = (self.p[i - 1] - p_prev) if i - 1 >= 0 else (self.p0 - p_prev)
-                dir_hint = _proj_on_plane(hint2, En_prev)
-                if np.linalg.norm(dir_hint) < 1e-9:
-                    dir_hint = _any_perp(En_prev)
-            dir_hat = _unit(dir_hint)
-
-            p_hat_i = p_prev + self.d[i + 1] * dir_hat
-
-            En_i = self._define_plane_i(i, p_prev=p_prev, forward=True)
-
-            v_to_next = ((self.p[i - 1] if i - 1 >= 0 else self.p0) - p_prev)
-            dir_plane = _proj_on_plane(v_to_next, En_i)
-            if np.linalg.norm(dir_plane) < 1e-9:
-                dir_plane = _proj_on_plane((p_hat_i - p_prev), En_i)
-            dir_plane = _unit(dir_plane)
-            p[i] = p_prev + self.d[i + 1] * dir_plane
-
-        if record:
-            self._record_state("Iter %d (After Forward)" % iter_idx, p)
-        self.p = p
-
-    def _step_backward(self, record=True, iter_idx=0):
-        p = self.p.copy()
-        p[0] = self.p0
-        if record:
-            self._record_state("Iter %d (Base Fixed)" % iter_idx, p)
-
-        for i in range(1, self.N):
-            p_prev = p[i - 1]
-            axis_prev = self.axes[i - 1]
-            if self.kinds[i - 1] == 'hinge':
-                En_prev = _unit(axis_prev)
-            else:
-                hint = _proj_on_plane((self.p[i] - p_prev), axis_prev)
-                En_prev = _unit(np.cross(axis_prev, _unit(hint) if np.linalg.norm(hint) > 1e-9 else _any_perp(axis_prev)))
-
-            dir_hint = _proj_on_plane((self.p[i] - p_prev), En_prev)
-            if np.linalg.norm(dir_hint) < 1e-9:
-                hint2 = (self.p[i + 1] - p_prev) if i + 1 < self.N else (self.p[-1] - p_prev)
-                dir_hint = _proj_on_plane(hint2, En_prev)
-                if np.linalg.norm(dir_hint) < 1e-9:
-                    dir_hint = _any_perp(En_prev)
-            dir_hat = _unit(dir_hint)
-            p_hat_i = p_prev + self.d[i] * dir_hat
-
-            En_i = self._define_plane_i(i, p_prev=p_prev, forward=False)
-
-            v_to_next = ((self.p[i + 1] if i + 1 < self.N else self.p[-1]) - p_prev)
-            dir_plane = _proj_on_plane(v_to_next, En_i)
-            if np.linalg.norm(dir_plane) < 1e-9:
-                dir_plane = _proj_on_plane((p_hat_i - p_prev), En_i)
-            dir_plane = _unit(dir_plane)
-            p[i] = p_prev + self.d[i] * dir_plane
-
-        if record:
-            self._record_state("Iter %d (After Backward)" % iter_idx, p)
-        self.p = p
-
-    # -------------- Public API --------------
-    def solve(self, target, tol=1e-3, max_iters=32, record_history=True):
-        self.target = np.asarray(target, float).reshape(3,)
-        self.history = []
-        self._record_state("Initial", self.p)
-
-        if np.linalg.norm(self.target - self.p0) > self.total_len + 1e-9:
-            dir0 = _unit(self.target - self.p0)
-            p = np.zeros_like(self.p)
-            p[0] = self.p0 + dir0 * self.d[0]
-            for i in range(1, self.N):
-                p[i] = p[i - 1] + dir0 * self.d[i]
-            self.p = p
-            self._record_state("Unreachable — straightened", self.p)
-            return self.p
-
-        for it in range(1, max_iters + 1):
-            self._step_forward(self.target, record=record_history, iter_idx=it)
-            self._step_backward(record=record_history, iter_idx=it)
-            if record_history:
-                self._record_state("Iter %d (End)" % it, self.p)
-            if np.linalg.norm(self.p[-1] - self.target) <= tol:
-                break
-        self._record_state("Final", self.p)
-        return self.p
-
-    # -------------- History helpers --------------
-    def _record_state(self, title, positions):
-        positions = np.asarray(positions, float).reshape(-1, 3)
-        # For visualization, expose joint axes as-is (no transport relative to parent here).
-        axes = [self.axes[i].copy() if (self.kinds[i] == 'hinge' and self.axes[i] is not None) else None
-                for i in range(self.N)]
-        error = float(np.linalg.norm(positions[-1] - (self.target if self.target is not None else positions[-1])))
-        self.history.append({
-            'title': str(title),
-            'positions': positions.copy(),
-            'axes': axes,
-            'error': error
-        })
-
-    # ===============================
-    # Visualization (cfabrik.py-style)
-    # ===============================
-    def _draw_constraint_circle(self, ax, center, normal, radius):
-        """Draws a circle (feasible locus for child link end) in plane with 'normal'."""
-        normal = _unit(normal)
-        u = _any_perp(normal)
-        v = np.cross(normal, u)
-        theta = np.linspace(0, 2*np.pi, 120)
-        circle_points = center[:, None] + radius * (u[:, None]*np.cos(theta) + v[:, None]*np.sin(theta))
-        ax.plot(circle_points[0, :], circle_points[1, :], circle_points[2, :])
-
-    def run_interactive_viewer(self):
-        if not self.history:
-            print("\nRun solve() first to populate history.")
-            return
-        self.fig = plt.figure(figsize=(10, 8))
-        self.ax = self.fig.add_subplot(111, projection='3d')
-        self.fig.canvas.mpl_connect('key_press_event', self.on_key_press)
-        print("\n--- Interactive Mode ---\nPress Right Arrow to advance, Left Arrow to go back.\nClose the window to exit.")
-        self.current_step = 0
-        self.redraw()
-        plt.show()
-
-    def on_key_press(self, event):
-        if event.key == 'right':
-            if self.current_step < len(self.history) - 1:
-                self.current_step += 1
-                self.redraw()
-        elif event.key == 'left':
-            if self.current_step > 0:
-                self.current_step -= 1
-                self.redraw()
-
-    def redraw(self):
-        self.ax.clear()
-        state = self.history[self.current_step]
-        positions = state['positions']
-        axes = state['axes']
-        title = state['title']
-        error = state['error']
-
-        # Draw links (including base as first point)
-        plot_points = np.vstack([self.p0, positions])
-        self.ax.plot(plot_points[:, 0], plot_points[:, 1], plot_points[:, 2], marker='o')
-
-        # Draw per-joint axis arrows and feasible circles for hinges
-        axis_starts = []
-        axis_vecs = []
-        for j in range(self.N):
-            axj = axes[j]
-            if axj is not None:
-                axis_starts.append(positions[j])
-                axis_vecs.append(_unit(axj))
-
-                # show feasible circle for child if exists
-                parent = positions[j]
-                if j + 1 < self.N:
-                    radius = float(np.linalg.norm(positions[j + 1] - positions[j]))
-                else:
-                    # last joint — show radius of its incoming link
-                    radius = float(np.linalg.norm(positions[j] - (positions[j - 1] if j - 1 >= 0 else self.p0)))
-                self._draw_constraint_circle(self.ax, parent, axj, radius)
-
-        if axis_starts:
-            axis_starts = np.asarray(axis_starts)
-            axis_vecs = np.asarray(axis_vecs)
-            self.ax.quiver(axis_starts[:, 0], axis_starts[:, 1], axis_starts[:, 2],
-                           axis_vecs[:, 0], axis_vecs[:, 1], axis_vecs[:, 2],
-                           length=0.15, normalize=True)
-
-        # Base & target
-        self.ax.scatter(self.p0[0], self.p0[1], self.p0[2], marker='s', s=60)
-        if self.target is not None:
-            self.ax.scatter(self.target[0], self.target[1], self.target[2], marker='*', s=120)
-
-        # Bounds & labels
-        reach = self.total_len * 1.25 if self.total_len > 0 else 1.0
-        self.ax.set_xlim([-reach, reach])
-        self.ax.set_ylim([-reach, reach])
-        self.ax.set_zlim([-reach, reach])
-        self.ax.set_xlabel('X'); self.ax.set_ylabel('Y'); self.ax.set_zlabel('Z')
-        self.ax.set_title(f"Step {self.current_step + 1}/{len(self.history)}: {title}\nEnd-effector error: {error:.6g}")
-        self.fig.canvas.draw_idle()
-
-
-# ===============================
-# Demo
-# ===============================
-def _demo():
-    # Simple 4-joint chain in XY plane with Z-axes for hinges
-    base = np.array([0., 0., 0.])
-    p = np.array([[0.2, 0., 0.],
-                  [0.4, 0., 0.],
-                  [0.6, 0., 0.],
-                  [0.8, 0., 0.]], dtype=float)
-    axes = np.array([[0., 0., 1.],
-                     [0., 1., 0.],
-                     [0., 1., 0.],
-                     [1., 0., 0.]], dtype=float)
-    kinds = ['hinge', 'hinge', 'hinge', 'hinge']
-
-    solver = FabrikRSolver(p, axes, kinds, base_position=base)
-    target = np.array([0.3, 0.2, 0.1])
-    solver.solve(target, tol=1e-4, max_iters=30, record_history=True)
-    solver.run_interactive_viewer()
-
-
+# --------------------------
+# 데모 실행
+# --------------------------
 if __name__ == "__main__":
-    _demo()
+    # 초기 각도 (rad)
+    thetas0 = np.zeros(6)
+
+    # p0..p6 초기 위치 및 길이
+    points0 = forward_kinematics_titan2(thetas0)     # p0..p6
+    lengths  = segment_lengths_from_points(points0)  # 세그먼트 길이 고정
+
+    # 타깃(도달 가능 범위 내로 설정)
+    target = np.array([0.3, 0.1, 0.3])  # [m]
+
+    # FABRIK-R 반복 (p0=월드 원점 고정, p1=DH로 앵커)
+    sol, hist, phi_n, phi_p, omega_n, omega_p = fabrik_r_iterate(
+        points0, lengths, target, base_origin=points0[0], thetas_for_dh=thetas0, max_iter=100, tol=1e-3
+    )
+
+    # ---------------- Visualization ----------------
+    fig = plt.figure(figsize=(8,8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # # 초기 체인
+    # p_init = hist[0]
+    # ax.plot(p_init[:,0], p_init[:,1], p_init[:,2], marker='o', linewidth=2, label='initial')
+
+    # 결과 체인
+    ax.plot(sol[:,0], sol[:,1], sol[:,2], marker='o', linewidth=3, label='FABRIK-R result')
+
+    # 타깃
+    ax.scatter([target[0]], [target[1]], [target[2]], s=70, label='target')
+
+    # 평면 표시 (최종 Φ, 마지막 Ω)
+    span = np.max(np.linalg.norm(sol - sol[0], axis=1))
+    draw_plane(ax, phi_n,  phi_p,  size=span*0.7)   # Φ_{2,3,4}
+    draw_plane(ax, omega_n, omega_p, size=span*0.6) # Ω
+
+    # 라벨
+    for i in range(7):
+        ax.text(sol[i,0], sol[i,1], sol[i,2], f"p{i}", fontsize=9)
+
+    ax.set_xlabel("X (m)")
+    ax.set_ylabel("Y (m)")
+    ax.set_zlabel("Z (m)")
+    ax.set_title("FABRIK-R style solution (Titan 2) — p0 fixed, p1 anchored by DH")
+    ax.legend(loc='upper left')
+
+    # 보기 좋게 등축비
+    limits = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+    center = np.mean(limits, axis=1)
+    radius = 0.6 * np.max(limits[:,1] - limits[:,0])
+    ax.set_xlim3d([center[0]-radius, center[0]+radius])
+    ax.set_ylim3d([center[1]-radius, center[1]+radius])
+    ax.set_zlim3d([center[2]-radius, center[2]+radius])
+
+    plt.show()

@@ -16,8 +16,6 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('solver', default_value='jacobian'),
-        DeclareLaunchArgument('publish_joint_rate_hz', default_value='30'),
-        DeclareLaunchArgument('joint_roles_override', default_value=''),
 
         # Jacobian
         DeclareLaunchArgument('jacobian_max_iter', default_value='150'),
@@ -31,10 +29,8 @@ def generate_launch_description():
         # FABRIK
         DeclareLaunchArgument('fabrik_max_iter', default_value='120'),
         DeclareLaunchArgument('fabrik_tol_pos', default_value='0.001'),
-
-        # Debug viz
-        DeclareLaunchArgument('debug_viz', default_value='true'),
-        DeclareLaunchArgument('debug_max_points', default_value='80'),
+        DeclareLaunchArgument('fabrik_align_passes', default_value='3'),
+        DeclareLaunchArgument('fabrik_tol_align', default_value='0.002'),
 
         Node(
             package='robot_state_publisher',
@@ -50,8 +46,6 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 {'solver': LaunchConfiguration('solver')},
-                {'publish_joint_rate_hz': LaunchConfiguration('publish_joint_rate_hz')},
-                {'joint_roles_override': LaunchConfiguration('joint_roles_override')},
                 # Jacobian
                 {'jacobian_max_iter': LaunchConfiguration('jacobian_max_iter')},
                 {'jacobian_tol_pos': LaunchConfiguration('jacobian_tol_pos')},
@@ -63,9 +57,8 @@ def generate_launch_description():
                 # FABRIK
                 {'fabrik_max_iter': LaunchConfiguration('fabrik_max_iter')},
                 {'fabrik_tol_pos': LaunchConfiguration('fabrik_tol_pos')},
-                # Debug
-                {'debug_viz': LaunchConfiguration('debug_viz')},
-                {'debug_max_points': LaunchConfiguration('debug_max_points')},
+                {'fabrik_align_passes': LaunchConfiguration('fabrik_align_passes')},
+                {'fabrik_tol_align': LaunchConfiguration('fabrik_tol_align')},
             ],
         ),
         Node(

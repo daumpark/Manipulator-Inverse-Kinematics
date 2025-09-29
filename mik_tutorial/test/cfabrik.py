@@ -565,6 +565,7 @@ class InteractiveConstrainedFABRIKSolver:
 # ================================================================
 if __name__ == "__main__":
     urdf_path = "piper_no_gripper_description.urdf"
+    # urdf_path = "panda.urdf"
     kin_model = KinematicModel(urdf_filename=urdf_path)
     solver = InteractiveConstrainedFABRIKSolver(kin_model)
 
