@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<robot name="planar2d">
+  <!-- base -->
+  <link name="base_link">
+    <visual>
+      <geometry><box size="0.05 0.05 0.02"/></geometry>
+      <origin xyz="0 0 0.01"/>
+      <material name="gray"><color rgba="0.6 0.6 0.6 1.0"/></material>
+    </visual>
+  </link>
+
+  <!-- link1 -->
+  <link name="link1">
+    <visual>
+      <geometry><cylinder radius="0.01" length="0.35"/></geometry>
+      <origin xyz="0.175 0 0" rpy="0 1.57079632679 0"/>
+      <material name="blue"><color rgba="0.2 0.2 0.8 1.0"/></material>
+    </visual>
+  </link>
+
+  <!-- link2 -->
+  <link name="link2">
+    <visual>
+      <geometry><cylinder radius="0.01" length="0.25"/></geometry>
+      <origin xyz="0.125 0 0" rpy="0 1.57079632679 0"/>
+      <material name="green"><color rgba="0.2 0.8 0.2 1.0"/></material>
+    </visual>
+  </link>
+
+  <link name="ee">
+    <visual>
+      <geometry><sphere radius="0.02"/></geometry>
+      <material name="red"><color rgba="0.8 0.2 0.2 1.0"/></material>
+    </visual>
+  </link>
+
+  <!-- joints: planar z-rotations -->
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="2.0"/>
+  </joint>
+
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0.35 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14159" upper="3.14159" effort="10" velocity="2.0"/>
+  </joint>
+
+  <joint name="ee_fixed" type="fixed">
+    <parent link="link2"/>
+    <child link="ee"/>
+    <origin xyz="0.25 0 0"/>
+  </joint>
+</robot>
