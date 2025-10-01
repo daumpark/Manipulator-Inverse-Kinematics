@@ -8,7 +8,7 @@ class _JacobianBase(IKSolverBase):
     def __init__(self, kinematics: KinematicModel):
         super().__init__(kinematics)
         self.q0 = np.deg2rad(np.array([55.0, 0.0, 205.0, 0.0, 85.0, 0.0], float))
-        self.max_iter = 150
+        self.max_iter = 1000
         self.tol_pos = 1e-3
         self.tol_rot = np.deg2rad(1.0)
         self.alpha = 0.7
@@ -117,38 +117,3 @@ class JacobianDLS(_JacobianBase):
             if not improved:
                 lam *= 2.0
         return kin.clamp(q), False, {'iters_total': iters, 'method':'DLS'}
-
-class CLIK(_JacobianBase):
-    """
-    Closed-Loop IK (discrete):
-      xdot = K * e
-      qdot = J^# * xdot
-      q_{k+1} = q_k + dt * qdot
-    """
-    def __init__(self, kin: KinematicModel):
-        super().__init__(kin)
-        self.Kp_pos = 2.0
-        self.Kp_rot = 1.5
-        self.dt = 0.02
-        self.max_iter = 300
-
-    def solve(self, target_pose, q_seed=None):
-        kin = self.kinematics
-        q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
-        iters=0
-        for it in range(self.max_iter):
-            iters = it+1
-            T_c, _ = kin.forward_kinematics(q)
-            e6 = self._se3_err_local(T_c, target_pose)
-            pe, re = np.linalg.norm(e6[:3]), np.linalg.norm(e6[3:])
-            if pe < self.tol_pos and re < self.tol_rot:
-                return kin.clamp(q), True, {'iters_total': iters, 'method':'CLIK'}
-
-            v_des = np.concatenate([ self.Kp_pos*e6[:3], self.Kp_rot*e6[3:] ])
-            J = kin.jacobian(q, ref_frame=pin.ReferenceFrame.LOCAL)
-            U,S,Vt = np.linalg.svd(J, full_matrices=False)
-            S_inv = np.diag([1/s if s>1e-4 else 0.0 for s in S])
-            J_pinv = Vt.T @ S_inv @ U.T
-            qdot = J_pinv @ v_des
-            q = kin.clamp(q + self.dt*qdot)
-        return kin.clamp(q), False, {'iters_total': iters, 'method':'CLIK'}

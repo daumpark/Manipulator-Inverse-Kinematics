@@ -9,12 +9,11 @@ from scipy.spatial.transform import Rotation as R
 
 from ik_common.common.kinematics import KinematicModel
 from redundant_ik.solvers import (
-    NullspacePositionOnly, PriorityLimitThenEE, WeightedCLIK, CTP_SVF_SD
+    NullspacePositionOnly, WeightedCLIK, CTP_SVF_SD
 )
 
 _SOLVER_MAP = {
     'nullspace': NullspacePositionOnly,
-    'priority':  PriorityLimitThenEE,
     'wclik':     WeightedCLIK,
     'ctp_svf':   CTP_SVF_SD,
 }

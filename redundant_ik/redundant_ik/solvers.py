@@ -29,16 +29,6 @@ def _joint_centering_grad(q, lower, upper):
     mid = 0.5*(lower+upper); rng = np.maximum(upper-lower, 1e-6)
     return (mid - q) / (rng**2)
 
-def _joint_limit_barrier_grad(q, lower, upper):
-    # 부드러운 배리어 기반 (중앙에서 0, 한계에서 커짐)
-    eps = 0.05 * np.maximum(upper-lower, 1e-6)
-    lo = lower + eps; hi = upper - eps
-    g = np.zeros_like(q)
-    for i,(qi,l,h) in enumerate(zip(q,lo,hi)):
-        if qi < l:      g[i] =  1.0 / max(l-qi, 1e-6)
-        elif qi > h:    g[i] = -1.0 / max(qi-h, 1e-6)
-    return g
-
 # --- solvers.py 상단 유틸 영역에 추가 ---
 def _jl_grad_dariush(q, lower, upper, eps=1e-9):
     q  = np.asarray(q, float)
@@ -49,7 +39,6 @@ def _jl_grad_dariush(q, lower, upper, eps=1e-9):
     den = 4.0 * np.maximum(hi - q, eps)**2 * np.maximum(q - lo, eps)**2
     return num / den  # = ∂H/∂q  (중앙 0, 한계에서 커짐)
 
-
 # ---------- 1) NullspacePositionOnly ----------
 class NullspacePositionOnly(IKSolverBase):
     """
@@ -59,7 +48,7 @@ class NullspacePositionOnly(IKSolverBase):
     def __init__(self, kinematics: KinematicModel):
         super().__init__(kinematics)
         self.q0 = np.deg2rad([55,0,205,0,85,0])
-        self.max_iter = 150
+        self.max_iter = 1000
         self.tol_pos = 1e-3
         self.Kp = 1.0
         self.dt = 0.02
@@ -71,7 +60,8 @@ class NullspacePositionOnly(IKSolverBase):
         q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
         for it in range(self.max_iter):
             T, _ = kin.forward_kinematics(q)
-            e = (target_pose[:3,3] - T[:3,3])
+            R = T[:3,:3]
+            e = R.T @ (target_pose[:3,3] - T[:3,3])
             if np.linalg.norm(e) < self.tol_pos:
                 return kin.clamp(q), True, {'iters_total': it+1, 'method':'NullspacePos'}
             J6 = kin.jacobian(q, ref_frame=pin.ReferenceFrame.LOCAL)
@@ -89,44 +79,6 @@ class NullspacePositionOnly(IKSolverBase):
                 alpha *= 0.5
         return kin.clamp(q), False, {'iters_total': self.max_iter, 'method':'NullspacePos'}
 
-# ---------- 2) Priority: Limit -> EE ----------
-class PriorityLimitThenEE(IKSolverBase):
-    """
-    1순위: joint-limit push (velocity task)
-    2순위: EE position tracking
-    """
-    def __init__(self, kinematics: KinematicModel):
-        super().__init__(kinematics)
-        self.q0 = np.deg2rad([55,0,205,0,85,0])
-        self.max_iter = 150
-        self.tol_pos = 1e-3
-        self.Kp = 1.0
-        self.dt = 0.02
-        self.lam = 1e-2
-        self.k1 = 1.0
-
-    def solve(self, target_pose, q_seed=None):
-        kin = self.kinematics
-        q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
-        for it in range(self.max_iter):
-            g = _joint_limit_barrier_grad(q, kin.lower, kin.upper)
-            # level 1
-            J1 = np.eye(len(q)); v1 = self.k1 * g
-            J1p, _ = _damped_pinv(J1, self.lam)
-            dq1 = J1p @ v1
-            P1 = np.eye(len(q)) - J1p @ J1
-            # level 2
-            T, _ = kin.forward_kinematics(q)
-            e = (target_pose[:3,3] - T[:3,3])
-            if np.linalg.norm(e) < self.tol_pos:
-                return kin.clamp(q), True, {'iters_total': it+1, 'method':'PrioLimitEE'}
-            J2 = kin.jacobian(q, ref_frame=pin.ReferenceFrame.LOCAL)[:3,:]
-            J2bar = J2 @ P1
-            J2bar_p, _ = _damped_pinv(J2bar, self.lam)
-            dq2 = J2bar_p @ (self.Kp * e - J2 @ dq1)
-            q = kin.clamp(q + (dq1 + dq2) * self.dt)
-        return kin.clamp(q), False, {'iters_total': self.max_iter, 'method':'PrioLimitEE'}
-
 # ---------- 3) Weighted-CLIK (joint-limit 가중) ----------
 class WeightedCLIK(IKSolverBase):
     """
@@ -136,13 +88,12 @@ class WeightedCLIK(IKSolverBase):
     def __init__(self, kinematics: KinematicModel):
         super().__init__(kinematics)
         self.q0 = np.deg2rad([0,30,-30,0,0,0])
-        self.max_iter = 150
+        self.max_iter = 1000
         self.tol_pos = 1e-3
         self.Kp = 1.0
         self.dt = 0.02
         self.lam = 1e-2
         self.w_scale = 1.0
-        self._g_prev = None  # 이전 |∂H/∂q| 저장
 
     def _W(self, q):
         g = np.abs(_jl_grad_dariush(q, self.kinematics.lower, self.kinematics.upper))
@@ -155,25 +106,26 @@ class WeightedCLIK(IKSolverBase):
         return np.diag(w)
 
     def solve(self, target_pose, q_seed=None):
+        self._g_prev = None
         kin = self.kinematics
+        lam = self.lam
         q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
         for it in range(self.max_iter):
             T, _ = kin.forward_kinematics(q)
-            e = (target_pose[:3,3] - T[:3,3])
-            if np.linalg.norm(e) < self.tol_pos:
+            R = T[:3,:3]
+            e = R.T @ (target_pose[:3,3] - T[:3,3])
+            error = np.linalg.norm(e)
+            print(error)
+            if error < self.tol_pos:
                 return kin.clamp(q), True, {'iters_total': it+1, 'method':'W-CLIK'}
             J = kin.jacobian(q, ref_frame=pin.ReferenceFrame.LOCAL)[:3,:]
-            print(self.kinematics.lower)
-            print(q)
-            print(self.kinematics.upper)
-            W = np.diag([1,1000,1,1,1,1,])
-            print(W)
+            W = self._W(q)
             Winv = np.linalg.inv(W)
-            A = J @ Winv @ J.T + (self.lam**2)*np.eye(3)
+            A = J @ Winv @ J.T + (lam**2)*np.eye(3)
             Jstar = Winv @ J.T @ np.linalg.inv(A)
             dq = Jstar @ (self.Kp * e)
             q = kin.clamp(q + dq * self.dt)
-        return kin.clamp(q), True, {'iters_total': self.max_iter, 'method':'W-CLIK'}
+        return kin.clamp(q), False, {'iters_total': self.max_iter, 'method':'W-CLIK'}
 
 # ---------- 4) CTP + SVF + SD ----------
 class CTP_SVF_SD(IKSolverBase):
@@ -183,7 +135,7 @@ class CTP_SVF_SD(IKSolverBase):
     def __init__(self, kinematics: KinematicModel):
         super().__init__(kinematics)
         self.q0 = np.deg2rad([55,0,205,0,85,0])
-        self.max_iter = 150
+        self.max_iter = 1000
         self.tol_pos = 1e-3
         self.Kp = 1.0
         self.dt = 0.02
@@ -207,7 +159,8 @@ class CTP_SVF_SD(IKSolverBase):
         q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
         for it in range(self.max_iter):
             T, _ = kin.forward_kinematics(q)
-            e = (target_pose[:3,3] - T[:3,3])
+            R = T[:3,:3]
+            e = R.T @ (target_pose[:3,3] - T[:3,3])
             if np.linalg.norm(e) < self.tol_pos:
                 return kin.clamp(q), True, {'iters_total': it+1, 'method':'CTP_SVF_SD'}
             J = kin.jacobian(q, ref_frame=pin.ReferenceFrame.LOCAL)[:3,:]

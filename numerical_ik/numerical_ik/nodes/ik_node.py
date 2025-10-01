@@ -9,13 +9,12 @@ from std_msgs.msg import Header
 
 from ik_common.common.kinematics import KinematicModel
 from ik_common.common.utils import se3_pos_ori_error
-from numerical_ik.solvers import JacobianTranspose, JacobianPinv, JacobianDLS, CLIK
+from numerical_ik.solvers import JacobianTranspose, JacobianPinv, JacobianDLS
 
 _SOLVER_MAP = {
     'jt': JacobianTranspose,
     'jpinv': JacobianPinv,
     'dls': JacobianDLS,
-    'clik': CLIK,
 }
 
 class NumericalIKNode(Node):
