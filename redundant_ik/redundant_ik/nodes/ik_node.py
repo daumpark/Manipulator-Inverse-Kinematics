@@ -117,7 +117,7 @@ class RedundantIKNode(Node):
             self.get_logger().info(f"Solved [{self.ik.__class__.__name__}] in {ms:.1f} ms; iters={info.get('iters_total','-')}")
         else:
             self.get_logger().warn(f"IK did not converge (iters={info.get('iters_total','-')}).")
-        
+
 def main(args=None):
     rclpy.init(args=args)
     node = RedundantIKNode()

@@ -17,7 +17,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('solver', default_value='dls'),
-        DeclareLaunchArgument('max_iter', default_value='150'),
+        DeclareLaunchArgument('max_iter', default_value='5000'),
         DeclareLaunchArgument('tol_pos', default_value='0.001'),
         DeclareLaunchArgument('tol_rot_deg', default_value='1.0'),
         DeclareLaunchArgument('alpha', default_value='0.7'),

@@ -63,15 +63,16 @@ class NumericalIKNode(Node):
         int_marker.header.frame_id = "base_link"
         int_marker.name = "target_pose_marker_num"
         int_marker.description = "Target Pose (Numerical IK)"
-        q_neutral = np.array([0, 0.5, 0.5, 0, 0, 0], float)
+        q_neutral = self.ik.q0 if hasattr(self.ik, 'q0') else np.zeros(6)
         initial_pose, _ = self.kin.forward_kinematics(q_neutral)
         int_marker.pose.position.x, int_marker.pose.position.y, int_marker.pose.position.z = map(float, initial_pose[:3,3])
         quat = R.from_matrix(initial_pose[:3,:3]).as_quat()
         int_marker.pose.orientation.x, int_marker.pose.orientation.y, int_marker.pose.orientation.z, int_marker.pose.orientation.w = map(float, quat)
         self.latest_target_pose[:3,:3] = initial_pose[:3,:3]
         self.latest_target_pose[:3,3] = initial_pose[:3,3]
-        box = Marker(); box.type=Marker.CUBE; box.scale.x=box.scale.y=box.scale.z=0.05; box.color.r=box.color.g=box.color.b=0.6; box.color.a=1.0
-        ctrl = InteractiveMarkerControl(); ctrl.always_visible=True; ctrl.markers.append(box); int_marker.controls.append(ctrl)
+        m = Marker(); m.type=Marker.SPHERE; m.scale.x=m.scale.y=m.scale.z=0.03
+        m.color.r=0.2; m.color.g=0.8; m.color.b=1.0; m.color.a=1.0
+        ctrl = InteractiveMarkerControl(); ctrl.always_visible=True; ctrl.markers.append(m); int_marker.controls.append(ctrl)
         for name,ox,oy,oz in [("move_x",1.,0.,0.),("move_y",0.,1.,0.),("move_z",0.,0.,1.)]:
             c=InteractiveMarkerControl(); c.orientation.w=1.0; c.orientation.x=ox; c.orientation.y=oy; c.orientation.z=oz; c.name=name; c.interaction_mode=InteractiveMarkerControl.MOVE_AXIS; int_marker.controls.append(c)
         for name,ox,oy,oz in [("rotate_x",1.,0.,0.),("rotate_y",0.,1.,0.),("rotate_z",0.,0.,1.)]:
