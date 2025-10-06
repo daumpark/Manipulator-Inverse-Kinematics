@@ -9,41 +9,63 @@ from std_msgs.msg import Header
 
 from ik_common.common.kinematics import KinematicModel
 from ik_common.common.utils import se3_pos_ori_error
-from heuristic_ik.solvers import FABRIK3D
+from heuristic_ik.solvers import FABRIK_R, DQ_FABRIK
 
 class HeuristicIKNode(Node):
     def __init__(self):
         super().__init__('heuristic_ik_node')
         self.kin = KinematicModel()
-        self.ik = FABRIK3D(self.kin)
+
+        # parameters
+        self.declare_parameter('solver', 'DQ_FABRIK')  # DQ_FABRIK or FABRIK_R
+        solver_name = str(self.get_parameter('solver').value).strip().upper()
+
         for p,v in [('fabrik_max_iter',120), ('fabrik_tol_pos',1e-3),
-                    ('fabrik_align_passes',3), ('fabrik_tol_align',2e-3)]:
+                    ('fabrik_align_passes',2), ('fabrik_tol_align',2e-3)]:
             self.declare_parameter(p, v)
+        self.declare_parameter('ori_max_iter', 30)
+        self.declare_parameter('ori_tol_deg', 1.0)
+        self.declare_parameter('ori_step', 1.0)
+
+        if solver_name == 'FABRIK_R':
+            self.ik = FABRIK_R(self.kin)
+        else:
+            self.ik = DQ_FABRIK(self.kin)
+
+        # apply params
         self.ik.max_iter_fabrik = int(self.get_parameter('fabrik_max_iter').value)
         self.ik.tol_fabrik      = float(self.get_parameter('fabrik_tol_pos').value)
         self.ik.align_passes    = int(self.get_parameter('fabrik_align_passes').value)
         self.ik.tol_align       = float(self.get_parameter('fabrik_tol_align').value)
+
+        if hasattr(self.ik, 'ori_max_iter'):
+            self.ik.ori_max_iter = int(self.get_parameter('ori_max_iter').value)
+        if hasattr(self.ik, 'ori_tol_rad'):
+            self.ik.ori_tol_rad = np.deg2rad(float(self.get_parameter('ori_tol_deg').value))
+        if hasattr(self.ik, 'ori_step'):
+            self.ik.ori_step = float(self.get_parameter('ori_step').value)
 
         self.joint_pub = self.create_publisher(JointState, 'joint_states', 10)
         self.im_server = InteractiveMarkerServer(self, "ik_controls_heur")
         self.q_seed=None; self.latest_target_pose=np.eye(4)
         self._drag=False; self._pose_before=None
         self._create_interactive_marker()
-        self.get_logger().info("Heuristic IK node ready (FABRIK 3D).")
+        self.get_logger().info(f"Heuristic IK node ready ({self.ik.__class__.__name__}).")
 
     def _create_interactive_marker(self):
         int_marker = InteractiveMarker()
         int_marker.header.frame_id="base_link"
         int_marker.name="target_pose_marker_heur"
         int_marker.description="Target Pose (Heuristic IK)"
-        q_neutral=np.array([0,0.5,0.5,0,0,0],float)
+        q_neutral=self.ik.q0 if hasattr(self.ik, 'q0') else np.zeros(6)
         T0,_=self.kin.forward_kinematics(q_neutral)
         int_marker.pose.position.x, int_marker.pose.position.y, int_marker.pose.position.z = map(float, T0[:3,3])
         quat=R.from_matrix(T0[:3,:3]).as_quat()
         int_marker.pose.orientation.x, int_marker.pose.orientation.y, int_marker.pose.orientation.z, int_marker.pose.orientation.w = map(float, quat)
         self.latest_target_pose[:3,:3]=T0[:3,:3]; self.latest_target_pose[:3,3]=T0[:3,3]
-        box=Marker(); box.type=Marker.CUBE; box.scale.x=box.scale.y=box.scale.z=0.05; box.color.r=box.color.g=box.color.b=0.6; box.color.a=1.0
-        ctrl=InteractiveMarkerControl(); ctrl.always_visible=True; ctrl.markers.append(box); int_marker.controls.append(ctrl)
+        m = Marker(); m.type=Marker.SPHERE; m.scale.x=m.scale.y=m.scale.z=0.03
+        m.color.r=0.2; m.color.g=0.8; m.color.b=1.0; m.color.a=1.0
+        ctrl=InteractiveMarkerControl(); ctrl.always_visible=True; ctrl.markers.append(m); int_marker.controls.append(ctrl)
         for name,ox,oy,oz in [("move_x",1.,0.,0.),("move_y",0.,1.,0.),("move_z",0.,0.,1.)]:
             c=InteractiveMarkerControl(); c.orientation.w=1.0; c.orientation.x=ox; c.orientation.y=oy; c.orientation.z=oz; c.name=name; c.interaction_mode=InteractiveMarkerControl.MOVE_AXIS; int_marker.controls.append(c)
         for name,ox,oy,oz in [("rotate_x",1.,0.,0.),("rotate_y",0.,1.,0.),("rotate_z",0.,0.,1.)]:
