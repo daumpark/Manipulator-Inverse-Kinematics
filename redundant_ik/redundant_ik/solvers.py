@@ -109,23 +109,22 @@ class WeightedCLIK(IKSolverBase):
         self._g_prev = None
         kin = self.kinematics
         lam = self.lam
-        q = kin.clamp(self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy())
+        q = self.q0.copy() if q_seed is None else np.asarray(q_seed, float).copy()
         for it in range(self.max_iter):
             T, _ = kin.forward_kinematics(q)
             R = T[:3,:3]
             e = R.T @ (target_pose[:3,3] - T[:3,3])
             error = np.linalg.norm(e)
-            print(error)
             if error < self.tol_pos:
-                return kin.clamp(q), True, {'iters_total': it+1, 'method':'W-CLIK'}
+                return q, True, {'iters_total': it+1, 'method':'W-CLIK'}
             J = kin.jacobian(q, ref_frame=pin.ReferenceFrame.LOCAL)[:3,:]
             W = self._W(q)
             Winv = np.linalg.inv(W)
             A = J @ Winv @ J.T + (lam**2)*np.eye(3)
             Jstar = Winv @ J.T @ np.linalg.inv(A)
             dq = Jstar @ (self.Kp * e)
-            q = kin.clamp(q + dq * self.dt)
-        return kin.clamp(q), False, {'iters_total': self.max_iter, 'method':'W-CLIK'}
+            q = q + dq * self.dt
+        return q, False, {'iters_total': self.max_iter, 'method':'W-CLIK'}
 
 # ---------- 4) CTP + SVF + SD ----------
 class CTP_SVF_SD(IKSolverBase):

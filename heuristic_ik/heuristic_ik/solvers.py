@@ -379,7 +379,7 @@ class DQ_FABRIK(IKSolverBase):
         # alignment
         self.align_passes = 2       # few passes are still faithful; can be 1
         self.tol_align = 2e-3
-        self.max_rounds = 8
+        self.max_rounds = 50
         # orientation (swing/twist)
         self.ori_max_iter = 30
         self.ori_tol_rad = np.deg2rad(1.0)
