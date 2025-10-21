@@ -3,133 +3,6 @@ import numpy as np
 from ik_common.common.base import IKSolverBase
 from ik_common.common.kinematics import KinematicModel
 
-# =========================
-# Dual Quaternion utilities
-# =========================
-# Quaternion is [w, x, y, z]
-def _qmul(q1, q2):
-    w1,x1,y1,z1 = q1
-    w2,x2,y2,z2 = q2
-    return np.array([
-        w1*w2 - x1*x2 - y1*y2 - z1*z2,
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2
-    ], dtype=float)
-
-def _qconj(q):
-    q = np.asarray(q, float)
-    return np.array([q[0], -q[1], -q[2], -q[3]], float)
-
-def _qnormalize(q):
-    n = np.linalg.norm(q)
-    return q if n < 1e-15 else q / n
-
-def _quat_from_axis_angle(axis, theta):
-    a = np.asarray(axis, float)
-    n = np.linalg.norm(a)
-    if n < 1e-15:
-        return np.array([1.,0.,0.,0.], float)
-    a = a / n
-    half = 0.5 * theta
-    s = np.sin(half)
-    return np.array([np.cos(half), a[0]*s, a[1]*s, a[2]*s], float)
-
-def _rotmat_from_quat(q):
-    # for debug/optionally building t = (I-R) p
-    w,x,y,z = q
-    xx,yy,zz = x*x, y*y, z*z
-    xy,xz,yz = x*y, x*z, y*z
-    wx,wy,wz = w*x, w*y, w*z
-    R = np.array([
-        [1-2*(yy+zz), 2*(xy-wz),   2*(xz+wy)],
-        [2*(xy+wz),   1-2*(xx+zz), 2*(yz-wx)],
-        [2*(xz-wy),   2*(yz+wx),   1-2*(xx+yy)]
-    ], float)
-    return R
-
-class DualQuaternion:
-    """
-    Rigid transform as a unit dual quaternion:
-      Q = qr + ε qd,  where qr is unit quaternion (rotation), qd encodes translation t via
-      qd = 0.5 * (0, t) * qr
-    """
-    __slots__ = ("qr","qd")
-    def __init__(self, qr, qd):
-        self.qr = _qnormalize(np.asarray(qr, float))
-        self.qd = np.asarray(qd, float)
-
-    @staticmethod
-    def from_rt(R, t):
-        # R: 3x3 rotation, t: 3
-        # get qr from R via robust formula (through axis-angle would also be fine)
-        # Here we rely on R being orthonormal (Pinocchio guarantees)
-        # Convert R -> quaternion (fast)
-        tr = R[0,0] + R[1,1] + R[2,2]
-        if tr > 0:
-            S = np.sqrt(tr+1.0)*2.0
-            w = 0.25*S
-            x = (R[2,1] - R[1,2]) / S
-            y = (R[0,2] - R[2,0]) / S
-            z = (R[1,0] - R[0,1]) / S
-        elif (R[0,0] > R[1,1]) and (R[0,0] > R[2,2]):
-            S = np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2]) * 2.0
-            w = (R[2,1] - R[1,2]) / S; x = 0.25*S
-            y = (R[0,1] + R[1,0]) / S; z = (R[0,2] + R[2,0]) / S
-        elif R[1,1] > R[2,2]:
-            S = np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2]) * 2.0
-            w = (R[0,2] - R[2,0]) / S; x = (R[0,1] + R[1,0]) / S
-            y = 0.25*S; z = (R[1,2] + R[2,1]) / S
-        else:
-            S = np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1]) * 2.0
-            w = (R[1,0] - R[0,1]) / S; x = (R[0,2] + R[2,0]) / S
-            y = (R[1,2] + R[2,1]) / S; z = 0.25*S
-        qr = _qnormalize(np.array([w,x,y,z], float))
-        t_quat = np.array([0., t[0], t[1], t[2]], float)
-        qd = 0.5 * _qmul(t_quat, qr)
-        return DualQuaternion(qr, qd)
-
-    @staticmethod
-    def pure_rotation_about_axis_through_point(axis, theta, point):
-        """
-        Pure rotation around axis 'axis' by angle theta, axis passing through 'point' (world).
-        The rigid transform is: x' = p + R (x - p)  =>  R rotation, translation t = (I - R) p
-        """
-        qr = _quat_from_axis_angle(axis, theta)
-        R = _rotmat_from_quat(qr)
-        t = (np.eye(3) - R) @ np.asarray(point, float)
-        t_quat = np.array([0., t[0], t[1], t[2]], float)
-        qd = 0.5 * _qmul(t_quat, qr)
-        return DualQuaternion(qr, qd)
-
-    def normalize(self):
-        n = np.linalg.norm(self.qr)
-        if n < 1e-15:
-            self.qr = np.array([1.,0.,0.,0.], float)
-            self.qd = np.array([0.,0.,0.,0.], float)
-            return self
-        self.qr /= n; self.qd /= n
-        return self
-
-    def conj(self):
-        return DualQuaternion(_qconj(self.qr), _qconj(self.qd))
-
-    def mul(self, other):
-        qr = _qmul(self.qr, other.qr)
-        qd = _qmul(self.qr, other.qd) + _qmul(self.qd, other.qr)
-        return DualQuaternion(qr, qd)
-
-    def transform_point(self, p):
-        # p' = r p r* + t, with t = 2 * qd * r*
-        r = self.qr; d = self.qd
-        p_q = np.array([0., p[0], p[1], p[2]], float)
-        r_conj = _qconj(r)
-        pr = _qmul(_qmul(r, p_q), r_conj)
-        t_q = _qmul(d, r_conj)
-        t = 2.0 * t_q[1:]
-        return pr[1:] + t
-
-
 # =======================================================
 # Legacy FABRIK_R (kept as-is so you can switch if wanted)
 # =======================================================
@@ -482,12 +355,6 @@ class DQ_FABRIK(IKSolverBase):
                 if abs(th) < 1e-9:
                     continue
 
-                # --- This is where we use a *pure-rotation DQ* (axis through p_i) ---
-                # Build DQ and (conceptually) apply it to downstream; in practice, we
-                # just update q[i-1] by th which is exactly this rotation in the model.
-                dq = DualQuaternion.pure_rotation_about_axis_through_point(a, th, p_i).normalize()
-                # Note: we don't need to explicitly move points with dq; FK(q) will.
-
                 # Apply as a joint angle update, respecting limits if needed
                 q[i - 1] = q[i - 1] + th
                 if jtype == 'revolute' and self.is_joint_limits:
@@ -542,7 +409,6 @@ class DQ_FABRIK(IKSolverBase):
                     if abs(th) < 1e-9:
                         continue
                     th *= self.ori_step
-                    dq = DualQuaternion.pure_rotation_about_axis_through_point(a, th, p_i).normalize()
                     # apply as joint update (equivalent)
                     q[idx] = q[idx] + th
                     if jt == 'revolute' and self.is_joint_limits:
@@ -568,7 +434,6 @@ class DQ_FABRIK(IKSolverBase):
             th_twist = np.arctan2(np.dot(a6, np.cross(x_cur, x_tgt)), np.dot(x_cur, x_tgt))
             if abs(th_twist) > 1e-9:
                 th_twist *= self.ori_step
-                dq = DualQuaternion.pure_rotation_about_axis_through_point(a6, th_twist, p6).normalize()
                 q[5] = q[5] + th_twist
                 jt6 = kin.joint_type.get(kin.joint_names[5], 'revolute')
                 if jt6 == 'revolute' and self.is_joint_limits:
