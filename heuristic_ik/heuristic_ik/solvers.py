@@ -17,7 +17,7 @@ class FABRIK_R(IKSolverBase):
         self.max_rounds = 10
         self.prev_plane_n = None
         self.last_q = None
-        self.is_joint_limits = False
+        self.is_joint_limits = True
 
     @staticmethod
     def _norm(v):
