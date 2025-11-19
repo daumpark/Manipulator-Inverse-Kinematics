@@ -23,12 +23,9 @@ def generate_launch_description():
     lam_arg      = DeclareLaunchArgument('lam',      default_value='0.01')
     k_ns_arg     = DeclareLaunchArgument('k_ns',     default_value='0.2')
     Kp_arg       = DeclareLaunchArgument('Kp',       default_value='1.0')
-    gamma_arg    = DeclareLaunchArgument('gamma_max',default_value='0.2')
-    nu_arg       = DeclareLaunchArgument('nu',       default_value='10.0')
-    s0_arg       = DeclareLaunchArgument('sigma0',   default_value='0.005')
 
     return LaunchDescription([
-        solver_arg, dt_arg, lam_arg, k_ns_arg, Kp_arg, gamma_arg, nu_arg, s0_arg,
+        solver_arg, dt_arg, lam_arg, k_ns_arg, Kp_arg,
 
         # robot_state_publisher (URDF 직접 주입)
         Node(package='robot_state_publisher', executable='robot_state_publisher', output='screen',
@@ -44,9 +41,6 @@ def generate_launch_description():
                {'lam':    LaunchConfiguration('lam')},
                {'k_ns':   LaunchConfiguration('k_ns')},
                {'Kp':     LaunchConfiguration('Kp')},
-               {'gamma_max': LaunchConfiguration('gamma_max')},
-               {'nu':     LaunchConfiguration('nu')},
-               {'sigma0': LaunchConfiguration('sigma0')},
              ]),
 
         # RViz
