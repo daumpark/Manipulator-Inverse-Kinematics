@@ -1,134 +1,349 @@
-# ik_common/common/kinematics.py
+"""Kinematic model utilities for the PiPER robot."""
+
+import os
+import xml.etree.ElementTree as ET
+from typing import Dict, List, Tuple
+
 import numpy as np
 import pinocchio as pin
-import os, xml.etree.ElementTree as ET
 from ament_index_python.packages import get_package_share_directory
 from rclpy.logging import get_logger
 
+
 class KinematicModel:
-    def __init__(self):
+    """
+    Wrapper around the Pinocchio robot model for the PiPER robot.
+
+    This class:
+      * Loads the robot URDF and builds the Pinocchio model.
+      * Extracts joint names, joint limits, and joint axes.
+      * Provides forward kinematics and Jacobian computation.
+      * Provides convenient helpers such as clamping, chain points, etc.
+    """
+
+    def __init__(self) -> None:
+        """Load the URDF, build the model, and pre-compute basic info."""
         try:
-            desc_share = get_package_share_directory('piper_description')
-            urdf_file = os.path.join(desc_share, 'urdf', 'piper_no_gripper_description.urdf')
+            # Locate the URDF from the ROS 2 package share directory.
+            desc_share = get_package_share_directory("piper_description")
+            urdf_file = os.path.join(
+                desc_share,
+                "urdf",
+                "piper_no_gripper_description.urdf",
+            )
         except Exception:
-            urdf_file = '/mnt/data/piper_no_gripper_description.urdf'
+            # Fallback path (e.g. when running outside ROS 2 environment).
+            urdf_file = "/mnt/data/piper_no_gripper_description.urdf"
+
+        # Ensure that the URDF actually exists.
         if not os.path.exists(urdf_file):
-            raise FileNotFoundError(f"PiPER URDF not found: {urdf_file}")
+            raise FileNotFoundError(
+                f"PiPER URDF not found: {urdf_file}"
+            )
 
-        self.urdf_file = urdf_file
+        self.urdf_file: str = urdf_file
+
+        # Build the Pinocchio robot wrapper from the URDF.
         self.robot = pin.robot_wrapper.RobotWrapper.BuildFromURDF(urdf_file)
-        self.model = self.robot.model
-        self.data = self.robot.data
-        self.logger = get_logger('ik_common.kinematics')
+        self.model: pin.Model = self.robot.model
+        self.data: pin.Data = self.robot.data
 
-        # EE frame
-        self.ee_joint_name = "joint6"
+        # ROS 2 logger for debugging and information messages.
+        self.logger = get_logger("ik_common.kinematics")
+
+        # ---------------------------------------------------------------------
+        # End-effector (EE) frame handling
+        # ---------------------------------------------------------------------
+
+        # Default end-effector joint name used to find the EE frame.
+        self.ee_joint_name: str = "joint6"
+
         try:
-            self.ee_frame_id = self.model.getFrameId(self.ee_joint_name)
+            # Try to find the frame ID associated with the EE joint.
+            self.ee_frame_id: int = self.model.getFrameId(self.ee_joint_name)
         except Exception:
+            # If it fails, fall back to the last frame in the model.
             self.ee_frame_id = self.model.nframes - 1
 
-        # joint names
-        names = []
-        for i in range(1, 7):
-            nm = f"joint{i}"
-            try:
-                if self.model.getJointId(nm) > 0:
-                    names.append(nm)
-            except Exception:
-                pass
-        if len(names) != 6:
-            names = [j.name for j in self.model.joints if j.nq > 0][:6]
-        self.joint_names = names
+        # ---------------------------------------------------------------------
+        # Joint name discovery
+        # ---------------------------------------------------------------------
 
-        # parse URDF
-        lower, upper = [], []
-        axis_map_local = {}
-        type_map = {}
+        # Try to collect joint names "joint1" ~ "joint6".
+        names: List[str] = []
+        for index in range(1, 7):
+            joint_name = f"joint{index}"
+            try:
+                # getJointId returns 0 if the joint is not found.
+                if self.model.getJointId(joint_name) > 0:
+                    names.append(joint_name)
+            except Exception:
+                # Ignore joints that cannot be found.
+                pass
+
+        # If something went wrong, fall back to the first 6 actuated joints.
+        if len(names) != 6:
+            names = [
+                joint.name
+                for joint in self.model.joints
+                if joint.nq > 0
+            ][:6]
+
+        self.joint_names: List[str] = names
+
+        # ---------------------------------------------------------------------
+        # Parse URDF for joint limits and axes
+        # ---------------------------------------------------------------------
+
+        lower: List[float] = []
+        upper: List[float] = []
+        axis_map_local: Dict[str, np.ndarray] = {}
+        type_map: Dict[str, str] = {}
+
+        # Parse the URDF using ElementTree.
         root = ET.parse(urdf_file).getroot()
-        lim_map = {}
-        for j in root.findall('joint'):
-            nm = j.attrib.get('name', '')
-            jtype = j.attrib.get('type', '')
-            type_map[nm] = jtype
-            lim = j.find('limit')
-            if lim is not None and 'lower' in lim.attrib and 'upper' in lim.attrib:
-                lim_map[nm] = (float(lim.attrib['lower']), float(lim.attrib['upper']))
-            elif jtype == 'continuous':
-                lim_map[nm] = (-np.inf, np.inf)
-            ax = j.find('axis')
-            if ax is not None and 'xyz' in ax.attrib:
-                xyz = np.fromstring(ax.attrib['xyz'], sep=' ', dtype=float)
+
+        # Temporary map from joint name to limits.
+        lim_map: Dict[str, Tuple[float, float]] = {}
+
+        for joint in root.findall("joint"):
+            name = joint.attrib.get("name", "")
+            joint_type = joint.attrib.get("type", "")
+
+            # Store joint type (revolute, prismatic, continuous, etc.).
+            type_map[name] = joint_type
+
+            # -------------------------------
+            # Joint limit parsing
+            # -------------------------------
+            limit = joint.find("limit")
+            if (
+                limit is not None
+                and "lower" in limit.attrib
+                and "upper" in limit.attrib
+            ):
+                lim_map[name] = (
+                    float(limit.attrib["lower"]),
+                    float(limit.attrib["upper"]),
+                )
+            elif joint_type == "continuous":
+                # Continuous joint => no explicit bounds.
+                lim_map[name] = (-np.inf, np.inf)
+
+            # -------------------------------
+            # Joint axis parsing
+            # -------------------------------
+            axis = joint.find("axis")
+            if axis is not None and "xyz" in axis.attrib:
+                xyz = np.fromstring(
+                    axis.attrib["xyz"],
+                    sep=" ",
+                    dtype=float,
+                )
+                # If axis is zero-length, fall back to z-axis.
                 if np.linalg.norm(xyz) < 1e-12:
                     xyz = np.array([0.0, 0.0, 1.0])
-                axis_map_local[nm] = xyz / np.linalg.norm(xyz)
-        for nm in self.joint_names:
-            lo, hi = lim_map.get(nm, (-np.inf, np.inf))
-            lower.append(lo); upper.append(hi)
-        self.lower = np.asarray(lower, float)
-        self.upper = np.asarray(upper, float)
-        self.joint_axis_local = axis_map_local
-        self.joint_type = type_map
+                axis_map_local[name] = xyz / np.linalg.norm(xyz)
 
-        # compute r_ee_to_j6_ee
+        # Build joint limit arrays in the order of self.joint_names.
+        for name in self.joint_names:
+            lo, hi = lim_map.get(name, (-np.inf, np.inf))
+            lower.append(lo)
+            upper.append(hi)
+
+        self.lower = np.asarray(lower, dtype=float)
+        self.upper = np.asarray(upper, dtype=float)
+        self.joint_axis_local: Dict[str, np.ndarray] = axis_map_local
+        self.joint_type: Dict[str, str] = type_map
+
+        # ---------------------------------------------------------------------
+        # Compute vector from EE to joint6 in EE frame
+        # ---------------------------------------------------------------------
+
         try:
-            qzero = np.zeros(6, float)
-            self._full_fk(qzero)
+            # Use zero configuration to compute the relative position at rest.
+            q_zero = np.zeros(6, dtype=float)
+            self._full_fk(q_zero)
+
             j6_name = self.joint_names[-1]
-            self.j6_id = self.model.getJointId(j6_name)
-            Tj6 = self.data.oMi[self.j6_id]
-            Tee = self.data.oMf[self.ee_frame_id]
-            r_world = Tj6.translation - Tee.translation
-            R_ee = Tee.rotation
+            self.j6_id: int = self.model.getJointId(j6_name)
+
+            # Homogeneous transform of joint 6 in world frame.
+            T_j6 = self.data.oMi[self.j6_id]
+
+            # Homogeneous transform of EE frame in world frame.
+            T_ee = self.data.oMf[self.ee_frame_id]
+
+            # Vector from EE to joint 6 in world coordinates.
+            r_world = T_j6.translation - T_ee.translation
+
+            # Rotation matrix of EE frame in world coordinates.
+            R_ee = T_ee.rotation
+
+            # Express the vector in EE frame coordinates.
             self.r_ee_to_j6_ee = R_ee.T @ r_world
         except Exception:
+            # Fallback if anything goes wrong during this computation.
             self.j6_id = None
-            self.r_ee_to_j6_ee = np.zeros(3)
+            self.r_ee_to_j6_ee = np.zeros(3, dtype=float)
 
-    def _full_fk(self, q):
-        q = np.asarray(q, float).flatten()
+    # -------------------------------------------------------------------------
+    # Internal helper: full forward kinematics
+    # -------------------------------------------------------------------------
+    def _full_fk(self, q: np.ndarray) -> None:
+        """
+        Run full forward kinematics for a given joint configuration.
+
+        Args:
+            q: 1D array of 6 joint values.
+        """
+        q = np.asarray(q, dtype=float).flatten()
         if q.size != 6:
             raise ValueError("FK expects 6 joint values.")
+
+        # Update all joint placements in the Pinocchio model.
         pin.forwardKinematics(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
 
-    def forward_kinematics(self, q):
-        self._full_fk(q)
-        Ts = []
-        for nm in self.joint_names:
-            jid = self.model.getJointId(nm)
-            Ts.append(self.data.oMi[jid].homogeneous.copy())
-        fid = self.ee_frame_id
-        if not (0 <= fid < len(self.data.oMf)):
-            fid = len(self.data.oMf) - 1
-        T_ee = self.data.oMf[fid].homogeneous.copy()
-        return T_ee, Ts
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
+    def forward_kinematics(
+        self,
+        q: np.ndarray,
+    ) -> Tuple[np.ndarray, List[np.ndarray]]:
+        """
+        Compute the end-effector pose and poses of all joints in the chain.
 
-    def jacobian(self, q, ref_frame=pin.ReferenceFrame.LOCAL):
-        q = np.asarray(q, float).flatten()
+        Args:
+            q: 1D array of 6 joint values.
+
+        Returns:
+            T_ee: 4x4 homogeneous transform of the end-effector in world frame.
+            Ts: List of 4x4 homogeneous transforms, one for each joint in
+                `self.joint_names`, in world frame.
+        """
+        self._full_fk(q)
+
+        # Collect homogeneous transforms of each joint.
+        transforms: List[np.ndarray] = []
+        for name in self.joint_names:
+            joint_id = self.model.getJointId(name)
+            transforms.append(self.data.oMi[joint_id].homogeneous.copy())
+
+        # EE frame may be out of bounds; clamp to the last frame if needed.
+        frame_id = self.ee_frame_id
+        if not (0 <= frame_id < len(self.data.oMf)):
+            frame_id = len(self.data.oMf) - 1
+
+        # Homogeneous transform of the end-effector frame.
+        T_ee = self.data.oMf[frame_id].homogeneous.copy()
+        return T_ee, transforms
+
+    def jacobian(
+        self,
+        q: np.ndarray,
+        ref_frame: pin.ReferenceFrame = pin.ReferenceFrame.LOCAL,
+    ) -> np.ndarray:
+        """
+        Compute the end-effector Jacobian for the given configuration.
+
+        Args:
+            q: 1D array of 6 joint values.
+            ref_frame: Reference frame for the Jacobian (LOCAL, WORLD, etc.).
+
+        Returns:
+            6xN Jacobian matrix of the EE frame, where N is the number of
+            joints in the model.
+        """
+        q = np.asarray(q, dtype=float).flatten()
+
+        # Update joint Jacobians and frame placements.
         pin.computeJointJacobians(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
-        fid = self.ee_frame_id
-        if not (0 <= fid < self.model.nframes):
-            fid = self.model.nframes - 1
-        return pin.computeFrameJacobian(self.model, self.data, q, fid, ref_frame)
 
-    def clamp(self, q):
+        frame_id = self.ee_frame_id
+        if not (0 <= frame_id < self.model.nframes):
+            frame_id = self.model.nframes - 1
+
+        # Compute the Jacobian of the EE frame in the requested reference frame.
+        return pin.computeFrameJacobian(
+            self.model,
+            self.data,
+            q,
+            frame_id,
+            ref_frame,
+        )
+
+    def clamp(self, q: np.ndarray) -> np.ndarray:
+        """
+        Clamp a joint configuration to the joint limits.
+
+        Args:
+            q: 1D array of joint values.
+
+        Returns:
+            Clamped joint array where each element is within [lower, upper].
+        """
+        q = np.asarray(q, dtype=float)
         return np.minimum(np.maximum(q, self.lower), self.upper)
 
-    def joint_axis_world(self, q, joint_name):
-        self._full_fk(q)
-        jid = self.model.getJointId(joint_name)
-        Rw = self.data.oMi[jid].rotation
-        a_local = self.joint_axis_local.get(joint_name, np.array([0.0, 0.0, 1.0]))
-        a_world = Rw @ a_local
-        n = np.linalg.norm(a_world)
-        return a_world if n < 1e-12 else a_world / n
+    def joint_axis_world(
+        self,
+        q: np.ndarray,
+        joint_name: str,
+    ) -> np.ndarray:
+        """
+        Get the rotation axis of a joint expressed in world coordinates.
 
-    def chain_points(self, q):
+        Args:
+            q: 1D array of 6 joint values.
+            joint_name: Name of the joint whose axis is requested.
+
+        Returns:
+            3D unit vector representing the axis direction in world frame.
+        """
         self._full_fk(q)
-        pts = [np.zeros(3, float)]
-        for nm in self.joint_names:
-            jid = self.model.getJointId(nm)
-            pts.append(self.data.oMi[jid].translation.copy())
-        return np.asarray(pts)
+
+        joint_id = self.model.getJointId(joint_name)
+        # Rotation of the joint frame in world coordinates.
+        R_world = self.data.oMi[joint_id].rotation
+
+        # Local joint axis (fallback: z-axis if not found).
+        axis_local = self.joint_axis_local.get(
+            joint_name,
+            np.array([0.0, 0.0, 1.0], dtype=float),
+        )
+
+        # Transform local axis into world frame.
+        axis_world = R_world @ axis_local
+        norm = np.linalg.norm(axis_world)
+
+        # Normalize; if the vector is nearly zero, just return as is.
+        if norm < 1e-12:
+            return axis_world
+        return axis_world / norm
+
+    def chain_points(self, q: np.ndarray) -> np.ndarray:
+        """
+        Get the 3D positions of each joint in the chain.
+
+        Args:
+            q: 1D array of 6 joint values.
+
+        Returns:
+            (N+1, 3) array of points in world frame, where:
+                - index 0 is the base origin (0, 0, 0),
+                - indices 1..N are the positions of each joint in order.
+        """
+        self._full_fk(q)
+
+        # Start with the base origin.
+        points: List[np.ndarray] = [np.zeros(3, dtype=float)]
+
+        # Append the translation of each joint.
+        for name in self.joint_names:
+            joint_id = self.model.getJointId(name)
+            points.append(self.data.oMi[joint_id].translation.copy())
+
+        return np.asarray(points, dtype=float)

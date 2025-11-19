@@ -8,13 +8,13 @@ from std_msgs.msg import Header
 
 from ik_common.common.kinematics import KinematicModel
 from redundant_ik.solvers import (
-    NullspacePositionOnly, WeightedCLIK, SVF
+    NullspacePositionOnly, WeightedCLIK, CTP_SVF_SD
 )
 
 _SOLVER_MAP = {
-    'nullspace': NullspacePositionOnly,
-    'wclik':     WeightedCLIK,
-    'svf':       SVF,
+    'nullspace':  NullspacePositionOnly,
+    'wclik':      WeightedCLIK,
+    'ctp_svf_sd': CTP_SVF_SD,
 }
 
 def _vec_to_pose44(p):

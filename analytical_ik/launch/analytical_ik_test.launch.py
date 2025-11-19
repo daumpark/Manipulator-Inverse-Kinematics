@@ -15,7 +15,6 @@ def generate_launch_description():
     return LaunchDescription([
         Node(package='robot_state_publisher', executable='robot_state_publisher', output='screen',
              parameters=[{'robot_description': robot_desc}]),
-        # map -> base_link 정적 TF
         Node(package='tf2_ros', executable='static_transform_publisher', output='screen',
              arguments=['0','0','0','0','0','0','map','base_link']),
         Node(package='analytical_ik', executable='ik_node', output='screen'),
