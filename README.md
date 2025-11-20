@@ -1,9 +1,13 @@
 # [Manipulator Inverse Kinematics]
 
 Manipulator Inverse Kinematics Lecture with Youtube Videos and Source Codes.  
-
+(KHU ME77600 Assignment)
 ## Overview
 This repository provides beginner course of manipulator inverse kinematics.
+
+
+## Youtube Link
+* [Lecture Videos (Korean)](https://youtube.com/playlist?list=PLfi1zBFcXfkdZvRJdZnKJFn9HmIxKmIIl&si=wUJv-r0AGMHA_7E4)
 
 ## Dependencies
 
