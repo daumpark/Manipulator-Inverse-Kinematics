@@ -1,64 +1,75 @@
-# [This is Example for Readme File]
+# [Manipulator Inverse Kinematics]
 
-Short one-line description.  
-예: MPC-based Whole-Body Controller for Humanoid Robots.
+Manipulator Inverse Kinematics Lecture with Youtube Videos and Source Codes.  
 
 ## Overview
-이 저장소는 [로봇 이름/시뮬레이터]에서 [제어 방법]을 구현한 ROS 2 패키지입니다.  
-본 연구는 [논문명/프로젝트명]의 일부로 수행되었습니다.
+This repository provides beginner course of manipulator inverse kinematics.
 
 ## Dependencies
-- ROS 2 Humble (>= 2022.05)
-- Python 3.10 / C++17
-- [Pinocchio](https://github.com/stack-of-tasks/pinocchio) >= 2.6.15
-- [acados](https://github.com/acados/acados) >= 0.2.0
 
-설치 예시:
-```bash
-sudo apt install ros-humble-ros2-control ros-humble-gazebo-ros-pkgs
-pip install pinocchio==2.6.15
-```
+### 1. Prerequisites
+* **ROS 2 Distribution**: Humble
+* **Python**: 3.8+
 
-## Installation
+### 2. Required Packages
+
+* **Core & Build Tools**
+    * `rclpy`: ROS 2 Python client library.
+    * `ament_index_python`: Python API for the Ament resource index.
+* **Math & Kinematics**
+    * `pinocchio`: A fast and flexible implementation of Rigid Body Dynamics algorithms.
+* **Messages & Interfaces**
+    * `std_msgs` / `sensor_msgs`: Standard ROS 2 message definitions.
+    * `visualization_msgs`: Messages for 3D visualization markers.
+* **Visualization & Robot State**
+    * `rviz2`: 3D visualization tool for ROS 2.
+    * `interactive_markers`: Tools for creating interactive 3D markers in RViz.
+    * `robot_state_publisher`: Publishes the state of the robot (tf tree) to `tf2`.
+
+### 3. Installation
+
+After cloning this repository into your workspace `src` folder, you can install all dependencies automatically using `rosdep`.
+
 ```bash
-mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
-git clone https://github.com/<org>/<repo>.git
+# Navigate to your workspace root (e.g., ~/ros2_ws)
 cd ~/ros2_ws
-colcon build --symlink-install
-source install/setup.bash
+
+# Update rosdep database
+sudo apt update
+rosdep update
+
+# Install dependencies
+rosdep install --from-paths src --ignore-src -r -y
+sudo apt install ros-humble-pinocchio
 ```
 
 ## Usage
 ```bash
-ros2 launch <package_name> sim.launch.py world:=lab_world
-ros2 run <package_name> mpc_controller --ros-args -p horizon:=30
+cd ~/ros2_ws
+colcon build --symlink-install
+source ~/.bashrc
 ```
 
-## Examples
-1. **MPC Tracking** – Humanoid walking in Gazebo  
+1. **Analytical IK** – 2-DOF planar analytical IK via interactive markers in RViz  
    ```bash
-   ros2 launch mpc_humanoid walking.launch.py
+   ros2 launch analytical_ik analytical_ik_test.launch.py
    ```
-2. **Impedance Control** – 7-DoF Arm tracking trajectory  
+2. **Jacobian-based IK** – numerical IK via interactive markers in RViz  
    ```bash
-   ros2 launch impedance_control demo.launch.py
+   ros2 launch numerical_ik numerical_ik_test.launch.py solver:=<solver_name>
    ```
-
-## Citation
-If you use this code in your research, please cite:
-
-```bibtex
-@inproceedings{kim2025mpc,
-  title     = {MPC-based Whole-Body Control for Humanoid Robots},
-  author    = {Kim, Sanghyun and Others},
-  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
-  year      = {2025}
-}
-```
+3. **Heuristic IK** – 2D heuristic IK with RViz visualization  
+   ```bash
+   ros2 launch heuristic_ik heuristic_ik_test.launch.py solver:=<solver_name>
+   ```
+4. **Redundancy & Null-space** – Real-time redundant IK using CLIK-style solvers in RViz 
+   ```bash
+   ros2 launch redundant_ik redundant_ik_test.launch.py solver:=<solver_name>
+   ```
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Contact
-Maintainer: [이름] (<email>)  
+Maintainer: [Daum Park] (doumpork@khu.ac.kr)  
 Lab: [RCI Lab @ Kyung Hee University](https://rcilab.khu.ac.kr)
